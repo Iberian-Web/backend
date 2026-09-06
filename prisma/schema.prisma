@@ -1,0 +1,260 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["public", "restaurant"]
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+
+  @@schema("public")
+}
+
+enum BillingFrequency {
+  MONTHLY
+  ANNUAL
+
+  @@schema("public")
+}
+
+/// Cliente registrado en el sistema
+model User {
+  id        String     @id @default(uuid())
+  dni       String     @unique
+  username  String     @unique
+  password  String
+  name      String
+  email     String     @unique
+  company   String     @default("")
+  phone     String     @default("")
+  address   String     @default("")
+  domains   String[]   @default([])
+  status    UserStatus @default(PENDING)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  instances Instance[]
+  sessions  Session[]
+  extraUsers ExtraCredential[]
+
+  @@map("users")
+  @@schema("public")
+}
+
+model ExtraCredential {
+  id        String   @id @default(uuid())
+  userId    String
+  username  String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("extra_credentials")
+  @@schema("public")
+}
+
+/// Sesión administrativa (token expirable)
+model Session {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+  @@schema("public")
+}
+
+/// Tipo de aplicación disponible en el catálogo (ej: Restaurante, Inmobiliaria…)
+model Application {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  color String @default("text-indigo-400")
+  icon  String @default("default")
+
+  services  Service[]
+  instances Instance[]
+
+  @@map("applications")
+  @@schema("public")
+}
+
+/// Servicio concreto que pertenece a una aplicación (ej: Reservas online)
+model Service {
+  id            Int    @id @default(autoincrement())
+  applicationId Int
+  name          String
+  description   String @default("")
+  price         String @default("")
+
+  application      Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  instanceServices InstanceService[]
+
+  @@map("services")
+  @@schema("public")
+}
+
+/// Contratación de una aplicación por parte de un cliente
+model Instance {
+  id              Int       @id @default(autoincrement())
+  userId          String
+  applicationId   Int
+  contractDate    DateTime  @default(now())
+  lastPaymentDate DateTime?
+  createdAt       DateTime  @default(now())
+
+  // Facturación: cada cuánto se cobra, desde qué fecha, y qué día del ciclo
+  // (mensual = día del mes; anual = mismo día/mes que billingStartDate).
+  billingFrequency BillingFrequency @default(MONTHLY)
+  billingStartDate DateTime? // si es null, se usa contractDate como fecha de inicio
+  billingDay       Int              @default(1) // día del mes en el que toca cobrar (1-31)
+
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application      Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  instanceServices InstanceService[]
+  payments         Payment[]
+  menus            Menu[]
+  reservations     Reservation[]
+
+  @@unique([userId, applicationId])
+  @@map("instances")
+  @@schema("public")
+}
+
+/// Registro histórico de un pago realizado por un cliente para una instancia contratada
+model Payment {
+  id         Int      @id @default(autoincrement())
+  instanceId Int
+  paidAt     DateTime @default(now())
+  note       String   @default("")
+
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+  @@schema("public")
+}
+
+/// Servicio activo/inactivo para un contrato concreto (Instance ↔ Service)
+model InstanceService {
+  id            Int     @id @default(autoincrement())
+  instanceId    Int
+  serviceId     Int
+  active        Boolean @default(true)
+  priceOverride String  @default("") // precio personalizado para este cliente, vacío = usa el del catálogo
+
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([instanceId, serviceId])
+  @@map("instance_services")
+  @@schema("public")
+}
+
+// ─────────────────────────────────────────────
+// Enums — Schema: restaurant
+// ─────────────────────────────────────────────
+
+enum Allergen {
+  GLUTEN
+  CRUSTACEOS
+  HUEVOS
+  PESCADO
+  CACAHUETES
+  SOJA
+  LACTEOS
+  FRUTOS_DE_CASCARA
+  APIO
+  MOSTAZA
+  SESAMO
+  SULFITOS
+  ALTRAMUCES
+  MOLUSCOS
+
+  @@schema("restaurant")
+}
+
+enum DishCategory {
+  ENTRANTE
+  PRINCIPAL
+  POSTRE
+  BEBIDA
+  GUARNICION
+  TAPA
+  MENU_CERRADO // Ideal para vender un "Menú del Día" o "Menú Infantil" como un único bloque
+
+  @@schema("restaurant")
+}
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+
+  @@schema("restaurant")
+}
+
+// ─────────────────────────────────────────────
+// Models — Schema: restaurant
+// ─────────────────────────────────────────────
+
+/// Carta/menú de un restaurante (pertenece a una instancia de la app Restaurante)
+model Menu {
+  id         Int      @id @default(autoincrement())
+  instanceId Int
+  name       String
+  createdAt  DateTime @default(now())
+
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  dishes   Dish[]
+
+  @@map("menus")
+  @@schema("restaurant")
+}
+
+/// Plato individual dentro de un menú
+model Dish {
+  id          Int          @id @default(autoincrement())
+  menuId      Int
+  name        String
+  description String       @default("")
+  price       String       @default("")
+
+  category  DishCategory @default(PRINCIPAL)
+  allergens Allergen[]   @default([])
+
+  menu Menu @relation(fields: [menuId], references: [id], onDelete: Cascade)
+
+  @@map("dishes")
+  @@schema("restaurant")
+}
+
+/// Reserva de un cliente en un restaurante
+model Reservation {
+  id             Int               @id @default(autoincrement())
+  instanceId     Int
+  customerName   String
+  customerPhone  String
+  customerEmail  String            @default("")
+  reservationDate DateTime
+  guests         Int
+  notes          String            @default("")
+  status         ReservationStatus @default(PENDING)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@map("reservations")
+  @@schema("restaurant")
+}

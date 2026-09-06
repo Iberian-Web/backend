@@ -1,0 +1,25 @@
+name: Code Style (Prettier)
+
+on:
+  push:
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  prettier:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/setup@v2
+        with:
+          version: 12
+          runtime: node@24
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check Code Style
+        run: pnpm run format:check
