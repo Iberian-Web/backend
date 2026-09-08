@@ -15,6 +15,6 @@ jobs:
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd ~/service-manager-backend
+            cd ~/backend
             git pull
             docker compose up -d --build backend

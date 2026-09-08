@@ -2,7 +2,7 @@
 
 Esta guía asume que ya tienes funcionando en local:
 
-- Backend (`service-manager-backend`) con `pnpm dev`.
+- Backend (`backend`) con `pnpm dev`.
 - Frontend (`service-manager-frontend`) con `pnpm dev` / `npm run dev`.
 
 Y que vas a desplegar:
@@ -142,8 +142,8 @@ al exterior** — solo accesibles dentro del propio servidor/Docker.
 ## 4. Subir el proyecto y arrancarlo
 
 ```bash
-git clone <tu-repo-del-backend> service-manager-backend
-cd service-manager-backend
+git clone <tu-repo-del-backend> backend
+cd backend
 cp .env.example .env
 nano .env   # rellena los valores de producción del paso 2
 
@@ -267,12 +267,12 @@ jobs:
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd ~/service-manager-backend
+            cd ~/backend
             git pull
             docker compose up -d --build backend
 ```
 
-Ajusta `cd ~/service-manager-backend` si en tu VPS el repo está en otra ruta.
+Ajusta `cd ~/backend` si en tu VPS el repo está en otra ruta.
 
 Qué hace cada parte: al hacer push a `main`, GitHub abre una conexión SSH al VPS usando los 3 secrets y ejecuta ese `script` tal cual lo escribirías tú a mano — trae el código nuevo (`git pull`) y reconstruye **solo** el contenedor `backend` (`postgres` no se toca, no hace falta reiniciar la base de datos por un cambio de código).
 
