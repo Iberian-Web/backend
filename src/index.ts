@@ -313,13 +313,14 @@ adminRouter.get("/customers", async (_req, res) => {
 });
 
 adminRouter.get("/customers/:id", async (req, res) => {
-  const customer = await prisma.user.findUniqueOrThrow({
+  const customer = await prisma.user.findUnique({
     where: { id: req.params.id },
     include: {
       extraUsers: { select: { id: true, username: true } },
       instances: { include: instanceWithDetails },
     },
   });
+  if (!customer) throw new ApiError(404, "Cliente no encontrado");
   res.json(customer);
 });
 

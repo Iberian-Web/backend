@@ -305,17 +305,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
+        uses: actions/checkout@v7
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/setup@v2
         with:
           version: 12
+          runtime: node@24
 
       - name: Run Security Audit
         # Ejecuta pnpm audit. Si en el futuro quieres que solo revise paquetes de producción,
@@ -324,6 +320,8 @@ jobs:
 ```
 
 Corre en **cada push** (a cualquier rama) y en cada pull request contra `main` — revisa las dependencias del proyecto en busca de vulnerabilidades conocidas. Este workflow no bloquea el despliegue de `deploy.yml` (son independientes); es una alerta temprana, no un requisito para desplegar.
+
+`pnpm/setup@v2` sustituye a los dos pasos que se usaban antes por separado (`actions/setup-node` + `pnpm/action-setup`) — con `runtime: node@24` instala Node 24 y con `version: 12` la versión de pnpm, todo en un único paso.
 
 ### 7.6 Estilo de código automático (`prettier.yml`)
 
@@ -342,17 +340,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
+        uses: actions/checkout@v7
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/setup@v2
         with:
-          version: 11
+          version: 12
+          runtime: node@24
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
