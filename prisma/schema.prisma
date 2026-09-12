@@ -7,6 +7,10 @@ datasource db {
   schemas  = ["public", "restaurant"]
 }
 
+// ─────────────────────────────────────────────
+// Schema: public — CRM / gestión de clientes
+// ─────────────────────────────────────────────
+
 enum UserStatus {
   ACTIVE
   INACTIVE
@@ -26,8 +30,6 @@ enum BillingFrequency {
 model User {
   id        String     @id @default(uuid())
   dni       String     @unique
-  username  String     @unique
-  password  String
   name      String
   email     String     @unique
   company   String     @default("")
@@ -38,43 +40,52 @@ model User {
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
-  instances Instance[]
-  sessions  Session[]
-  extraUsers ExtraCredential[]
+  instances   Instance[]
+  sessions    Session[]
+  credentials Credential[]
 
   @@map("users")
   @@schema("public")
 }
 
-model ExtraCredential {
+/// Credencial de acceso al portal — un cliente puede tener una o varias,
+/// cada una con su propio nombre, usuario y contraseña (p. ej. camareros).
+model Credential {
   id        String   @id @default(uuid())
   userId    String
+  name      String   @default("")
   username  String   @unique
   password  String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions Session[]
 
-  @@map("extra_credentials")
+  @@map("credentials")
   @@schema("public")
 }
 
-/// Sesión administrativa (token expirable)
+/// Sesión (token expirable). Para sesiones de cliente (customer portal),
+/// además del `userId` (la cuenta/restaurante) guarda qué `Credential`
+/// concreta inició sesión — es decir, qué camarero/a es — para que el
+/// backend sepa siempre "quién" hizo cada acción sin depender del body.
 model Session {
-  id        String   @id @default(uuid())
-  token     String   @unique
-  userId    String?
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+  id           String   @id @default(uuid())
+  token        String   @unique
+  userId       String?
+  credentialId String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
 
-  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  credential Credential? @relation(fields: [credentialId], references: [id], onDelete: SetNull)
 
   @@map("sessions")
   @@schema("public")
 }
 
-/// Tipo de aplicación disponible en el catálogo (ej: Restaurante, Inmobiliaria…)
+/// Tipo de aplicación disponible en el catálogo (ej: Restaurante)
 model Application {
   id    Int    @id @default(autoincrement())
   name  String @unique
@@ -112,18 +123,21 @@ model Instance {
   lastPaymentDate DateTime?
   createdAt       DateTime  @default(now())
 
-  // Facturación: cada cuánto se cobra, desde qué fecha, y qué día del ciclo
+  // Facturación: cada cuánto se cobra, desde qué fecha y qué día del ciclo
   // (mensual = día del mes; anual = mismo día/mes que billingStartDate).
+  // Si billingStartDate es null se usa contractDate como fecha de inicio.
   billingFrequency BillingFrequency @default(MONTHLY)
-  billingStartDate DateTime? // si es null, se usa contractDate como fecha de inicio
-  billingDay       Int              @default(1) // día del mes en el que toca cobrar (1-31)
+  billingStartDate DateTime?
+  billingDay       Int              @default(1)
 
   user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   application      Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   instanceServices InstanceService[]
   payments         Payment[]
   menus            Menu[]
+  menuSections     MenuSection[]
   reservations     Reservation[]
+  orders           Order[]
 
   @@unique([userId, applicationId])
   @@map("instances")
@@ -160,7 +174,7 @@ model InstanceService {
 }
 
 // ─────────────────────────────────────────────
-// Enums — Schema: restaurant
+// Schema: restaurant — Menú digital, reservas y comandas
 // ─────────────────────────────────────────────
 
 enum Allergen {
@@ -182,18 +196,6 @@ enum Allergen {
   @@schema("restaurant")
 }
 
-enum DishCategory {
-  ENTRANTE
-  PRINCIPAL
-  POSTRE
-  BEBIDA
-  GUARNICION
-  TAPA
-  MENU_CERRADO // Ideal para vender un "Menú del Día" o "Menú Infantil" como un único bloque
-
-  @@schema("restaurant")
-}
-
 enum ReservationStatus {
   PENDING
   CONFIRMED
@@ -204,9 +206,15 @@ enum ReservationStatus {
   @@schema("restaurant")
 }
 
-// ─────────────────────────────────────────────
-// Models — Schema: restaurant
-// ─────────────────────────────────────────────
+enum OrderStatus {
+  PENDING // Recibido, aún no ha entrado en cocina
+  IN_PROGRESS // En preparación en cocina
+  READY // Listo para servir/recoger
+  DELIVERED // Entregado en mesa / cerrado
+  CANCELLED
+
+  @@schema("restaurant")
+}
 
 /// Carta/menú de un restaurante (pertenece a una instancia de la app Restaurante)
 model Menu {
@@ -222,16 +230,37 @@ model Menu {
   @@schema("restaurant")
 }
 
+/// Sección de la carta (Entrante, Principal, Postre...) de un restaurante.
+/// Es una lista propia por restaurante (no un enum global) para poder
+/// crear, renombrar, reordenar o eliminar secciones libremente. Al crear
+/// una instancia de Restaurante se siembra con el set por defecto
+/// (Entrante, Principal, Postre, Bebida, Guarnición, Tapa, Menú cerrado).
+model MenuSection {
+  id         Int      @id @default(autoincrement())
+  instanceId Int
+  name       String
+  position   Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@unique([instanceId, name])
+  @@map("menu_sections")
+  @@schema("restaurant")
+}
+
 /// Plato individual dentro de un menú
 model Dish {
-  id          Int          @id @default(autoincrement())
+  id          Int    @id @default(autoincrement())
   menuId      Int
   name        String
-  description String       @default("")
-  price       String       @default("")
+  description String @default("")
+  price       String @default("")
 
-  category  DishCategory @default(PRINCIPAL)
-  allergens Allergen[]   @default([])
+  // Texto libre en vez de enum: permite crear secciones nuevas de carta
+  // ("Especiales", "Cumpleaños"...) sin necesitar tocar el esquema.
+  category  String     @default("Principal")
+  allergens Allergen[] @default([])
 
   menu Menu @relation(fields: [menuId], references: [id], onDelete: Cascade)
 
@@ -241,20 +270,54 @@ model Dish {
 
 /// Reserva de un cliente en un restaurante
 model Reservation {
-  id             Int               @id @default(autoincrement())
-  instanceId     Int
-  customerName   String
-  customerPhone  String
-  customerEmail  String            @default("")
+  id              Int               @id @default(autoincrement())
+  instanceId      Int
+  customerName    String
+  customerPhone   String
+  customerEmail   String            @default("")
   reservationDate DateTime
-  guests         Int
-  notes          String            @default("")
-  status         ReservationStatus @default(PENDING)
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  guests          Int
+  notes           String            @default("")
+  status          ReservationStatus @default(PENDING)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
   instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
 
   @@map("reservations")
+  @@schema("restaurant")
+}
+
+/// Pedido de un cliente en una mesa del restaurante (comanda)
+model Order {
+  id          Int         @id @default(autoincrement())
+  instanceId  Int
+  tableNumber Int
+  waiterName  String
+  status      OrderStatus @default(PENDING)
+  notes       String      @default("")
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  instance Instance    @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  items    OrderItem[]
+
+  @@map("orders")
+  @@schema("restaurant")
+}
+
+/// Línea de un pedido — guarda una "foto" del nombre y precio del plato en
+/// el momento de crear el pedido, para que el histórico no cambie si luego
+/// se edita o elimina el plato en la carta.
+model OrderItem {
+  id        Int   @id @default(autoincrement())
+  orderId   Int
+  dishName  String
+  quantity  Int
+  unitPrice Float @default(0)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("order_items")
   @@schema("restaurant")
 }
