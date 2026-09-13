@@ -9,12 +9,18 @@ import { DEFAULT_MENU_SECTIONS } from "../catalogue";
 
 const SALT_ROUNDS = 10;
 
-type NewCredentialInput = { name?: string; username: string; password: string };
+type NewCredentialInput = {
+  name?: string;
+  username: string;
+  password: string;
+  role?: string;
+};
 type CredentialUpdateInput = {
   id?: string;
   name?: string;
   username: string;
   password?: string;
+  role?: string;
 };
 
 export const adminRouter = Router();
@@ -33,13 +39,15 @@ adminRouter.get("/auth/me", (_req, res) => {
 
 // ── CUSTOMERS ────────────────────────────────────────────────────────────
 
+const customerWithDetails = {
+  credentials: { select: { id: true, name: true, username: true, role: true } },
+  instances: { include: instanceWithDetails },
+} as const;
+
 adminRouter.get("/customers", async (_req, res) => {
   const customers = await prisma.user.findMany({
     orderBy: { createdAt: "desc" },
-    include: {
-      credentials: { select: { id: true, name: true, username: true } },
-      instances: { include: instanceWithDetails },
-    },
+    include: customerWithDetails,
   });
   res.json(customers);
 });
@@ -47,10 +55,7 @@ adminRouter.get("/customers", async (_req, res) => {
 adminRouter.get("/customers/:id", async (req, res) => {
   const customer = await prisma.user.findUnique({
     where: { id: req.params.id },
-    include: {
-      credentials: { select: { id: true, name: true, username: true } },
-      instances: { include: instanceWithDetails },
-    },
+    include: customerWithDetails,
   });
   if (!customer) throw new ApiError(404, "Cliente no encontrado");
   res.json(customer);
@@ -86,8 +91,9 @@ adminRouter.post("/customers", async (req, res) => {
       name: credential.name ?? "",
       username: credential.username,
       password: bcrypt.hashSync(credential.password, SALT_ROUNDS),
+      role: credential.role ?? "",
     })),
-    select: { id: true, name: true, username: true },
+    select: { id: true, name: true, username: true, role: true },
   });
   res.status(201).json({ ...customer, credentials: createdCredentials });
 });
@@ -148,6 +154,7 @@ adminRouter.put("/customers/:id", async (req, res) => {
             data: {
               name: credential.name ?? "",
               username: credential.username,
+              role: credential.role ?? "",
               ...(credential.password && {
                 password: await bcrypt.hash(credential.password, SALT_ROUNDS),
               }),
@@ -159,6 +166,7 @@ adminRouter.put("/customers/:id", async (req, res) => {
               userId: req.params.id,
               name: credential.name ?? "",
               username: credential.username,
+              role: credential.role ?? "",
               password: await bcrypt.hash(
                 credential.password ?? "",
                 SALT_ROUNDS,
@@ -174,7 +182,7 @@ adminRouter.put("/customers/:id", async (req, res) => {
 
   const savedCredentials = await prisma.credential.findMany({
     where: { userId: customer.id },
-    select: { id: true, name: true, username: true },
+    select: { id: true, name: true, username: true, role: true },
   });
   res.json({ ...customer, credentials: savedCredentials });
 });
@@ -363,6 +371,60 @@ adminRouter.put(
         priceOverride: priceOverride ?? "",
       },
       include: { service: true },
+    });
+    res.json(row);
+  },
+);
+
+// ── CREDENTIAL SERVICES (permisos por usuario del portal) ────────────────
+// Sin fila en CredentialService = servicio habilitado (opt-out): sólo se
+// guarda una fila cuando se le quita a un usuario un servicio que su
+// contrato sí tiene activo.
+
+adminRouter.get("/credentials/:credentialId/services", async (req, res) => {
+  const credential = await prisma.credential.findUnique({
+    where: { id: req.params.credentialId },
+    select: { userId: true },
+  });
+  if (!credential) throw new ApiError(404, "Usuario no encontrado");
+
+  const [activeServices, overrides] = await Promise.all([
+    prisma.instanceService.findMany({
+      where: { active: true, instance: { userId: credential.userId } },
+      include: { service: { include: { application: true } } },
+    }),
+    prisma.credentialService.findMany({
+      where: { credentialId: req.params.credentialId },
+    }),
+  ]);
+
+  const overrideMap = new Map(overrides.map((o) => [o.serviceId, o.enabled]));
+  const seen = new Set<number>();
+  const result = activeServices
+    .filter((is) => (seen.has(is.serviceId) ? false : seen.add(is.serviceId)))
+    .map((is) => ({
+      serviceId: is.serviceId,
+      name: is.service.name,
+      applicationName: is.service.application.name,
+      enabled: overrideMap.get(is.serviceId) ?? true,
+    }));
+  res.json(result);
+});
+
+adminRouter.put(
+  "/credentials/:credentialId/services/:serviceId",
+  async (req, res) => {
+    const { credentialId } = req.params;
+    const serviceId = Number(req.params.serviceId);
+    const { enabled } = req.body;
+    if (typeof enabled !== "boolean") {
+      throw new ApiError(400, "enabled debe ser booleano");
+    }
+
+    const row = await prisma.credentialService.upsert({
+      where: { credentialId_serviceId: { credentialId, serviceId } },
+      update: { enabled },
+      create: { credentialId, serviceId, enabled },
     });
     res.json(row);
   },

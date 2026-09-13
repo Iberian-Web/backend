@@ -6,7 +6,7 @@ import { ApiError } from "../lib/errors";
 import {
   ADMIN_COOKIE_NAME,
   CUSTOMER_COOKIE_NAME,
-  TOKEN_EXPIRATION_HOURS,
+  TOKEN_EXPIRATION_MS,
   cookieOptions,
   expirationDate,
 } from "../lib/cookies";
@@ -29,11 +29,7 @@ publicRouter.post("/auth/login", async (req, res) => {
 
   const token = crypto.randomUUID();
   await prisma.session.create({ data: { token, expiresAt: expirationDate() } });
-  res.cookie(
-    ADMIN_COOKIE_NAME,
-    token,
-    cookieOptions(TOKEN_EXPIRATION_HOURS * 60 * 60 * 1000),
-  );
+  res.cookie(ADMIN_COOKIE_NAME, token, cookieOptions(TOKEN_EXPIRATION_MS));
   res.json({ authenticated: true });
 });
 
@@ -60,10 +56,6 @@ publicRouter.post("/customer-auth/login", async (req, res) => {
     },
   });
 
-  res.cookie(
-    CUSTOMER_COOKIE_NAME,
-    token,
-    cookieOptions(TOKEN_EXPIRATION_HOURS * 60 * 60 * 1000),
-  );
+  res.cookie(CUSTOMER_COOKIE_NAME, token, cookieOptions(TOKEN_EXPIRATION_MS));
   res.json({ authenticated: true, user: customer });
 });

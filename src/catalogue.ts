@@ -12,6 +12,7 @@ export const APP_CATALOGUE = [
       { name: "Pedidos", price: "59.99" },
       { name: "Reservas", price: "49.99" },
       { name: "Cocina", price: "29.99" },
+      { name: "Analíticas", price: "39.99" },
     ],
   },
 ] as const;

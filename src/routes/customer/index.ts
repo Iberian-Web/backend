@@ -5,6 +5,7 @@ import { requireSession, resolveWaiterName } from "../../middleware/session";
 import { menusRouter } from "./menus";
 import { reservationsRouter } from "./reservations";
 import { ordersRouter } from "./orders";
+import { analyticsRouter } from "./analytics";
 
 export const customerRouter = Router();
 customerRouter.use(requireSession(CUSTOMER_COOKIE_NAME, { customer: true }));
@@ -26,9 +27,23 @@ customerRouter.get("/portal/my-access", async (req, res) => {
     include: { instances: { include: instanceWithDetails } },
   });
   const waiterName = await resolveWaiterName(req);
-  res.json({ ...customer, waiterName });
+
+  // Servicios que este usuario concreto (no el cliente entero) tiene
+  // ocultos — ver CredentialService en el schema. Sin sesión de credencial
+  // (login "genérico" del cliente) no hay restricciones adicionales.
+  const disabledServiceIds = req.credentialId
+    ? (
+        await prisma.credentialService.findMany({
+          where: { credentialId: req.credentialId, enabled: false },
+          select: { serviceId: true },
+        })
+      ).map((row) => row.serviceId)
+    : [];
+
+  res.json({ ...customer, waiterName, disabledServiceIds });
 });
 
 customerRouter.use(menusRouter);
 customerRouter.use(reservationsRouter);
 customerRouter.use(ordersRouter);
+customerRouter.use(analyticsRouter);

@@ -326,6 +326,45 @@ async function seedReservations() {
 
 // ─── Pedidos de ejemplo ─────────────────────────────────────────────────
 
+// Pool de platos para generar pedidos históricos variados (usado solo para
+// poblar el gráfico de ingresos de Analíticas con datos realistas).
+const DISH_POOL = [
+  { name: "Croquetas de jamón", price: 8.5 },
+  { name: "Ensalada César", price: 11.0 },
+  { name: "Solomillo a la brasa", price: 24.5 },
+  { name: "Pasta al pesto", price: 14.0 },
+  { name: "Tiramisú artesanal", price: 6.5 },
+  { name: "Agua mineral", price: 2.0 },
+  { name: "Paella Valenciana", price: 14.5 },
+  { name: "Tortilla Española", price: 8.5 },
+];
+const WAITERS = ["María G.", "Carlos R.", "Laura M."];
+
+function pickRandomOrderItems() {
+  const count = Math.floor(Math.random() * 3) + 1;
+  return [...DISH_POOL]
+    .sort(() => 0.5 - Math.random())
+    .slice(0, count)
+    .map((dish) => ({
+      dishName: dish.name,
+      quantity: Math.floor(Math.random() * 2) + 1,
+      unitPrice: dish.price,
+    }));
+}
+
+/** Fecha aleatoria dentro del día `daysAgo` (0 = hoy), en horario de comidas/cenas. */
+function randomPastOrderDate(daysAgo: number): Date {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
+  date.setHours(
+    13 + Math.floor(Math.random() * 9), // entre las 13:00 y las 22:00
+    Math.floor(Math.random() * 60),
+    0,
+    0,
+  );
+  return date;
+}
+
 async function seedOrders() {
   const pedidosService = await prisma.service.findFirst({
     where: { name: "Pedidos" },
@@ -341,6 +380,26 @@ async function seedOrders() {
     const alreadySeeded = await prisma.order.count({ where: { instanceId } });
     if (alreadySeeded > 0) continue;
 
+    // Historial de los últimos 29 días (0-3 pedidos/día, todos entregados)
+    // para que el gráfico de ingresos de Analíticas tenga datos reales en
+    // vez de un único pico en "hoy".
+    for (let daysAgo = 29; daysAgo >= 1; daysAgo--) {
+      const ordersThatDay = Math.floor(Math.random() * 4);
+      for (let n = 0; n < ordersThatDay; n++) {
+        await prisma.order.create({
+          data: {
+            instanceId,
+            tableNumber: Math.floor(Math.random() * 14) + 1,
+            waiterName: randomItem(WAITERS),
+            status: "DELIVERED",
+            createdAt: randomPastOrderDate(daysAgo),
+            items: { create: pickRandomOrderItems() },
+          },
+        });
+      }
+    }
+
+    // Pedidos de "hoy" con distintos estados, para poblar el tablero de cocina.
     await prisma.order.create({
       data: {
         instanceId,

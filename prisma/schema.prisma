@@ -56,11 +56,13 @@ model Credential {
   name      String   @default("")
   username  String   @unique
   password  String
+  role      String   @default("") // etiqueta libre: "Camarero", "Cocina", "Encargado"...
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  sessions Session[]
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions           Session[]
+  credentialServices CredentialService[]
 
   @@map("credentials")
   @@schema("public")
@@ -109,6 +111,7 @@ model Service {
 
   application      Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   instanceServices InstanceService[]
+  credentialServices CredentialService[]
 
   @@map("services")
   @@schema("public")
@@ -170,6 +173,24 @@ model InstanceService {
 
   @@unique([instanceId, serviceId])
   @@map("instance_services")
+  @@schema("public")
+}
+
+/// Habilita/deshabilita un servicio (ya activo a nivel de contrato) para una
+/// credencial (usuario) concreta — p. ej. ocultarle "Cocina" a un camarero.
+/// Sin fila = habilitado (opt-out): así una credencial nueva ve todo lo que
+/// su contrato tiene activo, sin necesitar sembrar filas por cada servicio.
+model CredentialService {
+  id           Int     @id @default(autoincrement())
+  credentialId String
+  serviceId    Int
+  enabled      Boolean @default(true)
+
+  credential Credential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+  service    Service    @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([credentialId, serviceId])
+  @@map("credential_services")
   @@schema("public")
 }
 
