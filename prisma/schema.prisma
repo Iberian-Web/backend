@@ -26,6 +26,35 @@ enum BillingFrequency {
   @@schema("public")
 }
 
+/// CONTRACT = contrato de prestación de servicios (legal, vinculante).
+/// WEB_SCOPE = ficha descriptiva de lo que incluye el proyecto web (más
+/// detallada y comercial que el Anexo I del contrato).
+/// MAINTENANCE_PLAN = ficha del servicio de mantenimiento recurrente: qué
+/// cubre, qué no, tiempos de respuesta y cuota.
+/// QUOTE = presupuesto previo a la contratación con el desglose de precios.
+/// RENEWAL = addendum que prorroga un CONTRACT ya existente para un nuevo
+/// periodo, actualizando condiciones económicas si procede. Requiere que ya
+/// exista al menos un documento CONTRACT para ese cliente.
+enum DocumentType {
+  CONTRACT
+  WEB_SCOPE
+  MAINTENANCE_PLAN
+  QUOTE
+  RENEWAL
+
+  @@schema("public")
+}
+
+/// ACTIVE = "vigente" (la última generada). Al generar un documento nuevo del
+/// mismo tipo, el anterior pasa automáticamente a SUPERSEDED — nunca se borra,
+/// así queda el histórico de qué condiciones aceptó el cliente y cuándo.
+enum DocumentStatus {
+  ACTIVE
+  SUPERSEDED
+
+  @@schema("public")
+}
+
 /// Cliente registrado en el sistema
 model User {
   id        String     @id @default(uuid())
@@ -43,8 +72,32 @@ model User {
   instances   Instance[]
   sessions    Session[]
   credentials Credential[]
+  documents   Document[]
 
   @@map("users")
+  @@schema("public")
+}
+
+/// Documento generado para un cliente (contrato, ficha de alcance web, ficha
+/// de mantenimiento o presupuesto — todos en PDF). El PDF se guarda en la
+/// propia fila (`data`) para no depender de un almacenamiento de ficheros
+/// aparte; `select` sin `data` en los listados evita cargar los bytes salvo
+/// que se pida la descarga concreta.
+model Document {
+  id             Int            @id @default(autoincrement())
+  userId         String
+  type           DocumentType   @default(CONTRACT)
+  status         DocumentStatus @default(ACTIVE)
+  fileName       String
+  setupFee       String         @default("")
+  maintenanceFee String         @default("")
+  notes          String         @default("")
+  data           Bytes
+  createdAt      DateTime       @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("documents")
   @@schema("public")
 }
 
@@ -141,6 +194,7 @@ model Instance {
   menuSections     MenuSection[]
   reservations     Reservation[]
   orders           Order[]
+  tableSessions    TableSession[]
 
   @@unique([userId, applicationId])
   @@map("instances")
@@ -228,8 +282,9 @@ enum ReservationStatus {
 }
 
 enum OrderStatus {
-  PENDING // Recibido, aún no ha entrado en cocina
-  IN_PROGRESS // En preparación en cocina
+  PENDING // Legado: pedidos creados antes de que todo pedido nuevo entrase
+  // directamente en cocina. ya no se asigna a pedidos nuevos.
+  IN_PROGRESS // En cocina (estado inicial de cualquier pedido nuevo)
   READY // Listo para servir/recoger
   DELIVERED // Entregado en mesa / cerrado
   CANCELLED
@@ -309,19 +364,43 @@ model Reservation {
   @@schema("restaurant")
 }
 
-/// Pedido de un cliente en una mesa del restaurante (comanda)
-model Order {
-  id          Int         @id @default(autoincrement())
+/// "Sentada" de una mesa: agrupa todos los pedidos hechos por los mismos
+/// comensales mientras están en la mesa. Se abre automáticamente con el
+/// primer pedido de esa mesa y sigue abierta mientras se van añadiendo
+/// pedidos nuevos ("Nuevo pedido para esta mesa" reutiliza la sesión
+/// abierta en vez de crear una desconectada); se cierra explícitamente al
+/// cobrar ("Cerrar mesa"), lo que permite imprimir un único ticket con
+/// todo lo consumido (comida + postre + lo que sea) en vez de solo el
+/// último pedido.
+model TableSession {
+  id          Int       @id @default(autoincrement())
   instanceId  Int
   tableNumber Int
-  waiterName  String
-  status      OrderStatus @default(PENDING)
-  notes       String      @default("")
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  openedAt    DateTime  @default(now())
+  closedAt    DateTime?
 
-  instance Instance    @relation(fields: [instanceId], references: [id], onDelete: Cascade)
-  items    OrderItem[]
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  orders   Order[]
+
+  @@map("table_sessions")
+  @@schema("restaurant")
+}
+
+/// Pedido de un cliente en una mesa del restaurante (comanda)
+model Order {
+  id             Int         @id @default(autoincrement())
+  instanceId     Int
+  tableSessionId Int
+  tableNumber    Int
+  waiterName     String
+  status         OrderStatus @default(IN_PROGRESS)
+  notes          String      @default("")
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  instance     Instance     @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  tableSession TableSession @relation(fields: [tableSessionId], references: [id], onDelete: Cascade)
+  items        OrderItem[]
 
   @@map("orders")
   @@schema("restaurant")

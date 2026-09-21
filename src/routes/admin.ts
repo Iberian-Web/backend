@@ -1,4 +1,3 @@
-import bcrypt from "bcrypt";
 import { Router } from "express";
 import { instanceWithDetails, prisma } from "../lib/prisma";
 import { ApiError } from "../lib/errors";
@@ -6,22 +5,12 @@ import { ADMIN_COOKIE_NAME, clearCookieOptions } from "../lib/cookies";
 import { requireSession } from "../middleware/session";
 import { ensureCustomer } from "../lib/access";
 import { DEFAULT_MENU_SECTIONS } from "../catalogue";
-
-const SALT_ROUNDS = 10;
-
-type NewCredentialInput = {
-  name?: string;
-  username: string;
-  password: string;
-  role?: string;
-};
-type CredentialUpdateInput = {
-  id?: string;
-  name?: string;
-  username: string;
-  password?: string;
-  role?: string;
-};
+import { buildCreateData, buildUpdateData } from "../lib/customerInput";
+import {
+  createCredentials,
+  syncCredentials,
+  type CredentialInput,
+} from "../lib/credentials";
 
 export const adminRouter = Router();
 adminRouter.use(requireSession(ADMIN_COOKIE_NAME, { customer: false }));
@@ -42,6 +31,18 @@ adminRouter.get("/auth/me", (_req, res) => {
 const customerWithDetails = {
   credentials: { select: { id: true, name: true, username: true, role: true } },
   instances: { include: instanceWithDetails },
+  documents: {
+    select: {
+      id: true,
+      type: true,
+      status: true,
+      fileName: true,
+      setupFee: true,
+      notes: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: "desc" },
+  },
 } as const;
 
 adminRouter.get("/customers", async (_req, res) => {
@@ -62,129 +63,36 @@ adminRouter.get("/customers/:id", async (req, res) => {
 });
 
 adminRouter.post("/customers", async (req, res) => {
-  const {
-    dni,
-    name,
-    email,
-    company,
-    domains,
-    status,
-    phone,
-    address,
-    credentials,
-  } = req.body;
-  const customer = await prisma.user.create({
-    data: {
-      dni,
-      name,
-      email,
-      company: company ?? "",
-      domains: domains ?? [],
-      status: status ?? "PENDING",
-      phone: phone ?? "",
-      address: address ?? "",
-    },
+  const rawCredentials = (req.body.credentials ?? []) as CredentialInput[];
+
+  const customer = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({ data: buildCreateData(req.body) });
+    const credentials = await createCredentials(tx, created.id, rawCredentials);
+    return { ...created, credentials };
   });
-  const createdCredentials = await prisma.credential.createManyAndReturn({
-    data: (credentials ?? []).map((credential: NewCredentialInput) => ({
-      userId: customer.id,
-      name: credential.name ?? "",
-      username: credential.username,
-      password: bcrypt.hashSync(credential.password, SALT_ROUNDS),
-      role: credential.role ?? "",
-    })),
-    select: { id: true, name: true, username: true, role: true },
-  });
-  res.status(201).json({ ...customer, credentials: createdCredentials });
+
+  res.status(201).json(customer);
 });
 
 adminRouter.put("/customers/:id", async (req, res) => {
-  const {
-    dni,
-    name,
-    email,
-    company,
-    domains,
-    status,
-    phone,
-    address,
-    credentials,
-  } = req.body;
-
-  const customerExists = await prisma.user.findFirst({
-    where: { id: req.params.id },
-    select: { id: true },
-  });
-  if (!customerExists) throw new ApiError(404, "Cliente no encontrado");
+  await ensureCustomer(req.params.id);
+  const rawCredentials = req.body.credentials as CredentialInput[] | undefined;
 
   const customer = await prisma.$transaction(async (tx) => {
-    const updatedCustomer = await tx.user.update({
+    const updated = await tx.user.update({
       where: { id: req.params.id },
-      data: {
-        ...(dni !== undefined && { dni }),
-        ...(name !== undefined && { name }),
-        ...(email !== undefined && { email }),
-        ...(company !== undefined && { company: company ?? "" }),
-        ...(domains !== undefined && { domains: domains ?? [] }),
-        ...(status !== undefined && { status }),
-        ...(phone !== undefined && { phone: phone ?? "" }),
-        ...(address !== undefined && { address: address ?? "" }),
-      },
+      data: buildUpdateData(req.body),
     });
-
-    if (Array.isArray(credentials)) {
-      const existing = await tx.credential.findMany({
-        where: { userId: req.params.id },
-      });
-      const retainedIds = (credentials as CredentialUpdateInput[])
-        .map((c) => c.id)
-        .filter((id): id is string => Boolean(id));
-
-      await tx.credential.deleteMany({
-        where: { userId: req.params.id, id: { notIn: retainedIds } },
-      });
-
-      for (const credential of credentials as CredentialUpdateInput[]) {
-        if (
-          credential.id &&
-          existing.some((item) => item.id === credential.id)
-        ) {
-          await tx.credential.update({
-            where: { id: credential.id },
-            data: {
-              name: credential.name ?? "",
-              username: credential.username,
-              role: credential.role ?? "",
-              ...(credential.password && {
-                password: await bcrypt.hash(credential.password, SALT_ROUNDS),
-              }),
-            },
-          });
-        } else {
-          await tx.credential.create({
-            data: {
-              userId: req.params.id,
-              name: credential.name ?? "",
-              username: credential.username,
-              role: credential.role ?? "",
-              password: await bcrypt.hash(
-                credential.password ?? "",
-                SALT_ROUNDS,
-              ),
-            },
-          });
-        }
-      }
-    }
-
-    return updatedCustomer;
+    const credentials = Array.isArray(rawCredentials)
+      ? await syncCredentials(tx, req.params.id, rawCredentials)
+      : await tx.credential.findMany({
+          where: { userId: req.params.id },
+          select: { id: true, name: true, username: true, role: true },
+        });
+    return { ...updated, credentials };
   });
 
-  const savedCredentials = await prisma.credential.findMany({
-    where: { userId: customer.id },
-    select: { id: true, name: true, username: true, role: true },
-  });
-  res.json({ ...customer, credentials: savedCredentials });
+  res.json(customer);
 });
 
 adminRouter.delete("/customers/:id", async (req, res) => {
@@ -235,7 +143,10 @@ adminRouter.put("/services/:id", async (req, res) => {
 });
 
 adminRouter.delete("/services/:id", async (req, res) => {
-  await prisma.service.delete({ where: { id: Number(req.params.id) } });
+  const deleted = await prisma.service.deleteMany({
+    where: { id: Number(req.params.id) },
+  });
+  if (deleted.count === 0) throw new ApiError(404, "Servicio no encontrado");
   res.status(204).end();
 });
 
@@ -335,9 +246,10 @@ adminRouter.put("/instances/:instanceId/billing", async (req, res) => {
 });
 
 adminRouter.delete("/instances/:instanceId", async (req, res) => {
-  await prisma.instance.delete({
+  const deleted = await prisma.instance.deleteMany({
     where: { id: Number(req.params.instanceId) },
   });
+  if (deleted.count === 0) throw new ApiError(404, "Instancia no encontrada");
   res.status(204).end();
 });
 

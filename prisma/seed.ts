@@ -383,16 +383,36 @@ async function seedOrders() {
     // Historial de los últimos 29 días (0-3 pedidos/día, todos entregados)
     // para que el gráfico de ingresos de Analíticas tenga datos reales en
     // vez de un único pico en "hoy".
+    //
+    // Nota: no se puede mezclar el escalar `instanceId` con una relación
+    // anidada `tableSession: { create }` en el mismo `order.create()` —
+    // Prisma exige entonces que TODAS las relaciones (incluida `instance`)
+    // vayan en modo relación en vez de escalar, y falla con "Argument
+    // `instance` is missing". Por eso la sesión se crea aparte y solo se
+    // referencia por `tableSessionId` (escalar), igual que el resto de campos.
     for (let daysAgo = 29; daysAgo >= 1; daysAgo--) {
       const ordersThatDay = Math.floor(Math.random() * 4);
       for (let n = 0; n < ordersThatDay; n++) {
+        const createdAt = randomPastOrderDate(daysAgo);
+        const tableNumber = Math.floor(Math.random() * 14) + 1;
+        // Cada pedido histórico abre su propia sesión de mesa ya cerrada
+        // (no hay nada más que combinar en estos datos de ejemplo).
+        const session = await prisma.tableSession.create({
+          data: {
+            instanceId,
+            tableNumber,
+            openedAt: createdAt,
+            closedAt: createdAt,
+          },
+        });
         await prisma.order.create({
           data: {
             instanceId,
-            tableNumber: Math.floor(Math.random() * 14) + 1,
+            tableSessionId: session.id,
+            tableNumber,
             waiterName: randomItem(WAITERS),
             status: "DELIVERED",
-            createdAt: randomPastOrderDate(daysAgo),
+            createdAt,
             items: { create: pickRandomOrderItems() },
           },
         });
@@ -400,9 +420,13 @@ async function seedOrders() {
     }
 
     // Pedidos de "hoy" con distintos estados, para poblar el tablero de cocina.
+    const table4Session = await prisma.tableSession.create({
+      data: { instanceId, tableNumber: 4 },
+    });
     await prisma.order.create({
       data: {
         instanceId,
+        tableSessionId: table4Session.id,
         tableNumber: 4,
         waiterName: "María G.",
         status: "IN_PROGRESS",
@@ -417,12 +441,19 @@ async function seedOrders() {
       },
     });
 
+    // Mesa 7: dos pedidos de la misma sentada (comida ya lista + un
+    // segundo pedido recién entrado en cocina) para ilustrar cómo se
+    // combinan en una sola cuenta al cerrar la mesa.
+    const table7Session = await prisma.tableSession.create({
+      data: { instanceId, tableNumber: 7 },
+    });
     await prisma.order.create({
       data: {
         instanceId,
         tableNumber: 7,
+        tableSessionId: table7Session.id,
         waiterName: "Carlos R.",
-        status: "PENDING",
+        status: "READY",
         items: {
           create: [
             { dishName: "Ensalada César", quantity: 2, unitPrice: 11.0 },
@@ -431,10 +462,28 @@ async function seedOrders() {
         },
       },
     });
-
     await prisma.order.create({
       data: {
         instanceId,
+        tableNumber: 7,
+        tableSessionId: table7Session.id,
+        waiterName: "Carlos R.",
+        status: "IN_PROGRESS",
+        items: {
+          create: [
+            { dishName: "Tiramisú artesanal", quantity: 2, unitPrice: 6.5 },
+          ],
+        },
+      },
+    });
+
+    const table2Session = await prisma.tableSession.create({
+      data: { instanceId, tableNumber: 2 },
+    });
+    await prisma.order.create({
+      data: {
+        instanceId,
+        tableSessionId: table2Session.id,
         tableNumber: 2,
         waiterName: "Laura M.",
         status: "READY",
@@ -447,9 +496,13 @@ async function seedOrders() {
       },
     });
 
+    const table11Session = await prisma.tableSession.create({
+      data: { instanceId, tableNumber: 11, closedAt: new Date() },
+    });
     await prisma.order.create({
       data: {
         instanceId,
+        tableSessionId: table11Session.id,
         tableNumber: 11,
         waiterName: "María G.",
         status: "DELIVERED",
@@ -462,9 +515,13 @@ async function seedOrders() {
       },
     });
 
+    const table9Session = await prisma.tableSession.create({
+      data: { instanceId, tableNumber: 9, closedAt: new Date() },
+    });
     await prisma.order.create({
       data: {
         instanceId,
+        tableSessionId: table9Session.id,
         tableNumber: 9,
         waiterName: "Carlos R.",
         status: "CANCELLED",
@@ -484,6 +541,7 @@ async function seedOrders() {
 async function resetUserData() {
   await prisma.orderItem.deleteMany();
   await prisma.order.deleteMany();
+  await prisma.tableSession.deleteMany();
   await prisma.dish.deleteMany();
   await prisma.menu.deleteMany();
   await prisma.instanceService.deleteMany();

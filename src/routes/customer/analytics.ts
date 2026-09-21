@@ -25,6 +25,16 @@ function zeroCountByStatus<T extends string>(statuses: T[]) {
   return Object.fromEntries(statuses.map((s) => [s, 0])) as Record<T, number>;
 }
 
+/** Clave YYYY-MM-DD en huso horario LOCAL (no UTC): usar toISOString().slice(0, 10)
+ *  desplazaría pedidos cercanos a medianoche al día equivocado según el huso
+ *  horario del servidor frente a lo que ve el restaurante en el resto de la app. */
+function localDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 // GET /api/instances/:instanceId/analytics — resumen general para el restaurante
 analyticsRouter.get("/instances/:instanceId/analytics", async (req, res) => {
   const instanceId = Number(req.params.instanceId);
@@ -55,6 +65,17 @@ analyticsRouter.get("/instances/:instanceId/analytics", async (req, res) => {
     ? revenueTotal / billableOrders.length
     : 0;
 
+  // Facturado hoy: solo pedidos ya entregados (no basta con estar en
+  // curso) creados hoy. Antes vivía como cálculo aparte en el listado de
+  // pedidos; ahora se centraliza aquí, junto al resto de analíticas de
+  // facturación, en vez de mezclarse con la vista operativa de cocina.
+  const todayKey = localDateKey(new Date());
+  const revenueToday = billableOrders
+    .filter(
+      (o) => o.status === "DELIVERED" && localDateKey(o.createdAt) === todayKey,
+    )
+    .reduce((sum, o) => sum + orderTotal(o), 0);
+
   const ordersByStatus = zeroCountByStatus(ORDER_STATUSES);
   for (const o of orders) ordersByStatus[o.status]++;
 
@@ -63,11 +84,11 @@ analyticsRouter.get("/instances/:instanceId/analytics", async (req, res) => {
   for (let i = 0; i < 30; i++) {
     const d = new Date(since);
     d.setDate(d.getDate() + i);
-    dailyMap.set(d.toISOString().slice(0, 10), { orders: 0, revenue: 0 });
+    dailyMap.set(localDateKey(d), { orders: 0, revenue: 0 });
   }
   for (const o of billableOrders) {
     if (o.createdAt < since) continue;
-    const key = o.createdAt.toISOString().slice(0, 10);
+    const key = localDateKey(o.createdAt);
     const bucket = dailyMap.get(key);
     if (bucket) {
       bucket.orders++;
@@ -119,6 +140,7 @@ analyticsRouter.get("/instances/:instanceId/analytics", async (req, res) => {
   res.json({
     revenue: {
       total: Math.round(revenueTotal * 100) / 100,
+      today: Math.round(revenueToday * 100) / 100,
       averageOrderValue: Math.round(averageOrderValue * 100) / 100,
     },
     orders: {

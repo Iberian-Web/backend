@@ -219,7 +219,8 @@ menusRouter.put("/dishes/:dishId", async (req, res) => {
   });
   if (!dish) throw new ApiError(404, "Plato no encontrado");
   const menu = await prisma.menu.findUnique({ where: { id: dish.menuId } });
-  await ensureInstanceAccess(menu!.instanceId, req.userId);
+  if (!menu) throw new ApiError(404, "Menú no encontrado");
+  await ensureInstanceAccess(menu.instanceId, req.userId);
 
   const { name, description, price, category, allergens } = req.body;
   const updated = await prisma.dish.update({
