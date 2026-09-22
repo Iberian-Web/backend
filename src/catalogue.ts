@@ -2,7 +2,7 @@ import { prisma } from "./lib/prisma";
 
 // Add new apps here and restart the server — syncApplications() handles the
 // rest. Never add/remove from the UI; this is the single source of truth.
-export const APP_CATALOGUE = [
+const APP_CATALOGUE = [
   {
     name: "Restaurante",
     icon: "restaurant",

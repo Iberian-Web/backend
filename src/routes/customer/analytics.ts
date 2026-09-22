@@ -65,10 +65,8 @@ analyticsRouter.get("/instances/:instanceId/analytics", async (req, res) => {
     ? revenueTotal / billableOrders.length
     : 0;
 
-  // Facturado hoy: solo pedidos ya entregados (no basta con estar en
-  // curso) creados hoy. Antes vivía como cálculo aparte en el listado de
-  // pedidos; ahora se centraliza aquí, junto al resto de analíticas de
-  // facturación, en vez de mezclarse con la vista operativa de cocina.
+  // Facturado hoy: solo pedidos ya entregados (no basta con estar en curso)
+  // creados hoy.
   const todayKey = localDateKey(new Date());
   const revenueToday = billableOrders
     .filter(

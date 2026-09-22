@@ -97,6 +97,7 @@ model Document {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
   @@map("documents")
   @@schema("public")
 }
@@ -117,6 +118,7 @@ model Credential {
   sessions           Session[]
   credentialServices CredentialService[]
 
+  @@index([userId])
   @@map("credentials")
   @@schema("public")
 }
@@ -136,6 +138,8 @@ model Session {
   user       User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
   credential Credential? @relation(fields: [credentialId], references: [id], onDelete: SetNull)
 
+  @@index([userId])
+  @@index([credentialId])
   @@map("sessions")
   @@schema("public")
 }
@@ -166,6 +170,7 @@ model Service {
   instanceServices InstanceService[]
   credentialServices CredentialService[]
 
+  @@index([applicationId])
   @@map("services")
   @@schema("public")
 }
@@ -197,6 +202,7 @@ model Instance {
   tableSessions    TableSession[]
 
   @@unique([userId, applicationId])
+  @@index([applicationId])
   @@map("instances")
   @@schema("public")
 }
@@ -210,6 +216,7 @@ model Payment {
 
   instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
 
+  @@index([instanceId])
   @@map("payments")
   @@schema("public")
 }
@@ -226,6 +233,7 @@ model InstanceService {
   service  Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
 
   @@unique([instanceId, serviceId])
+  @@index([serviceId])
   @@map("instance_services")
   @@schema("public")
 }
@@ -244,6 +252,7 @@ model CredentialService {
   service    Service    @relation(fields: [serviceId], references: [id], onDelete: Cascade)
 
   @@unique([credentialId, serviceId])
+  @@index([serviceId])
   @@map("credential_services")
   @@schema("public")
 }
@@ -302,6 +311,7 @@ model Menu {
   instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
   dishes   Dish[]
 
+  @@index([instanceId])
   @@map("menus")
   @@schema("restaurant")
 }
@@ -340,6 +350,7 @@ model Dish {
 
   menu Menu @relation(fields: [menuId], references: [id], onDelete: Cascade)
 
+  @@index([menuId])
   @@map("dishes")
   @@schema("restaurant")
 }
@@ -360,6 +371,7 @@ model Reservation {
 
   instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
 
+  @@index([instanceId])
   @@map("reservations")
   @@schema("restaurant")
 }
@@ -382,6 +394,7 @@ model TableSession {
   instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
   orders   Order[]
 
+  @@index([instanceId])
   @@map("table_sessions")
   @@schema("restaurant")
 }
@@ -402,6 +415,8 @@ model Order {
   tableSession TableSession @relation(fields: [tableSessionId], references: [id], onDelete: Cascade)
   items        OrderItem[]
 
+  @@index([instanceId])
+  @@index([tableSessionId])
   @@map("orders")
   @@schema("restaurant")
 }
@@ -418,6 +433,7 @@ model OrderItem {
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
+  @@index([orderId])
   @@map("order_items")
   @@schema("restaurant")
 }

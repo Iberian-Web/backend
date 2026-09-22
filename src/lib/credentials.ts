@@ -26,10 +26,8 @@ const CREDENTIAL_SELECT = {
 } as const;
 
 /**
- * Valida y normaliza una credencial recibida del cliente. Lanza si falta el
- * usuario, o si es una credencial nueva sin contraseña — ésta es la única
- * fuente de verdad para esa regla, así que ninguna ruta puede saltársela
- * (incluso si el frontend un día deja de validarlo, esto sigue en pie).
+ * Valida y normaliza una credencial. Lanza si falta el usuario, o si es
+ * nueva y no trae contraseña — única fuente de verdad para esa regla.
  */
 function sanitizeCredential(raw: CredentialInput, isNew: boolean) {
   const username = raw.username?.trim() ?? "";
@@ -73,11 +71,8 @@ export async function createCredentials(
 }
 
 /**
- * Reconcilia las credenciales de un cliente existente contra la lista
- * enviada: borra las que ya no están, actualiza las que siguen (sólo
- * re-hashea la contraseña si viene una nueva) y crea las que faltan.
- * Una credencial se considera "nueva" si no trae id o su id no existe ya
- * en BD — y toda credencial nueva exige contraseña (ver sanitizeCredential).
+ * Reconcilia las credenciales de un cliente contra la lista enviada: borra
+ * las que ya no están, actualiza las que siguen y crea las que faltan.
  */
 export async function syncCredentials(
   tx: Tx,

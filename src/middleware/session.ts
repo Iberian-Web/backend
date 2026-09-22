@@ -59,11 +59,8 @@ export function requireCredentials(body: unknown): {
 }
 
 /**
- * Resuelve el nombre a mostrar como "camarero/a" del pedido a partir de la
- * SESIÓN autenticada — nunca de un valor enviado por el cliente. Así, si
- * "lucia.garcia229" inicia sesión, todos los pedidos que cree quedan
- * asociados a ella automáticamente, sin que nadie tenga que escribir su
- * nombre (ni pueda falsificarlo) en el formulario.
+ * Resuelve el nombre de "camarero/a" a partir de la SESIÓN autenticada,
+ * nunca de un valor enviado por el cliente (evita que se pueda falsificar).
  */
 export async function resolveWaiterName(req: Request): Promise<string> {
   if (req.credentialId) {

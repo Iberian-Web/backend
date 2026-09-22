@@ -9,12 +9,7 @@ import type {
   DocumentOptions,
 } from "./shared";
 
-export type {
-  DocumentAppLine,
-  DocumentCustomer,
-  DocumentServiceLine,
-  DocumentOptions,
-} from "./shared";
+export type { DocumentAppLine, DocumentOptions } from "./shared";
 
 /** Tipos de documento soportados, en el mismo orden que el enum de Prisma. */
 export const DOCUMENT_TYPES = [

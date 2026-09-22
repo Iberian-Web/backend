@@ -1,15 +1,13 @@
 export const ADMIN_COOKIE_NAME = "admin_session_token";
 export const CUSTOMER_COOKIE_NAME = "customer_session_token";
-export const TOKEN_EXPIRATION_HOURS = 24;
+const TOKEN_EXPIRATION_HOURS = 24;
 export const TOKEN_EXPIRATION_MS = TOKEN_EXPIRATION_HOURS * 60 * 60 * 1000;
 
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 
-// En producción el frontend vive en otro dominio (Cloudflare Pages): la
-// petición es cross-site y la cookie necesita SameSite=None + Secure
-// (Secure es obligatorio en cuanto SameSite es "none", exige HTTPS en el
-// backend). En local (mismo origen vía proxy de Vite), "lax" + no-secure
-// sigue funcionando.
+// En producción el frontend vive en otro dominio: la cookie necesita
+// SameSite=None + Secure (obligatorio en cuanto SameSite es "none"). En
+// local, mismo origen vía proxy de Vite, "lax" sin secure sigue funcionando.
 type SameSite = "none" | "lax";
 
 function baseCookieOptions() {

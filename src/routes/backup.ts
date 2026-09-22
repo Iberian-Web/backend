@@ -8,18 +8,15 @@ export const backupRouter = Router();
 backupRouter.use(requireSession(ADMIN_COOKIE_NAME, { customer: false }));
 
 /**
- * Versión del formato de backup. Si en el futuro cambia la forma en la que
- * se serializa algo (p. ej. un nuevo campo obligatorio), se sube este número
- * y se rechazan backups de versiones que ya no se sepan importar con
- * garantías, en vez de intentarlo a ciegas y dejar la base de datos a medias.
+ * Versión del formato de backup. Si cambia la serialización, se sube este
+ * número y se rechazan backups de versiones que ya no se sepan importar.
  */
 const BACKUP_VERSION = 2;
 
 /**
- * Tablas con id autonumérico (Int) cuya secuencia de PostgreSQL hay que
- * resincronizar tras restaurar un backup con ids explícitos. Si no se hace,
- * la secuencia se queda donde estaba (normalmente en 1) y el próximo INSERT
- * nuevo puede chocar con un id que el backup ya ha restaurado.
+ * Tablas con id autonumérico cuya secuencia de PostgreSQL hay que
+ * resincronizar tras restaurar un backup con ids explícitos, o el próximo
+ * INSERT puede chocar con uno ya restaurado.
  */
 const AUTOINCREMENT_TABLES: { schema: string; table: string }[] = [
   { schema: "public", table: "applications" },
@@ -136,10 +133,9 @@ backupRouter.get("/backup/export", async (_req, res) => {
 });
 
 // ── Importar toda la base de datos ──────────────────────────────────────────
-// SUSTITUYE POR COMPLETO todo lo que hubiera antes: se vacían todas las
-// tablas del negocio y se reinsertan exactamente los datos del backup,
-// manteniendo los mismos ids (para que las relaciones internas del propio
-// backup, que también van por id, sigan siendo válidas).
+// SUSTITUYE POR COMPLETO todo lo anterior: vacía las tablas del negocio y
+// reinserta los datos del backup manteniendo los mismos ids (las relaciones
+// internas del backup también van por id).
 backupRouter.post("/backup/import", async (req, res) => {
   const body = req.body as {
     version?: number;

@@ -15,13 +15,9 @@ import {
 
 /**
  * Addendum de renovación: NO es un contrato nuevo, sino un documento que
- * prorroga el contrato original ya firmado (referenciado por su fecha) y
- * dejar constancia de qué condiciones económicas se actualizan, si alguna.
- * El resto de cláusulas del contrato original permanecen vigentes.
- *
- * `options.originalContractDate` es obligatorio en la práctica: la ruta que
- * llama a este renderer debe validar que existe un contrato previo antes de
- * generar una renovación (ver routes/documents.ts).
+ * prorroga el contrato original ya firmado, actualizando condiciones
+ * económicas si procede. `options.originalContractDate` debe venir siempre
+ * (la ruta que llama a esto valida que ya existe un contrato previo).
  */
 export async function renderRenewalPdf(
   customer: DocumentCustomer,

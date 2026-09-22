@@ -54,11 +54,9 @@ function withOrderTotal<
 }
 
 /**
- * Busca la sesión de mesa abierta (sin cerrar) para esa mesa, o crea una
- * nueva si no hay ninguna. Así, mientras la mesa siga "abierta", todos los
- * pedidos que se hagan para ella (comida, luego postre, luego más
- * bebida...) quedan agrupados en la misma sesión y se pueden combinar en
- * un único ticket/cuenta al cobrar.
+ * Busca la sesión de mesa abierta para esa mesa, o crea una nueva. Así todos
+ * los pedidos de la mesa mientras siga abierta quedan agrupados en un único
+ * ticket al cobrar.
  */
 async function getOrOpenTableSession(instanceId: number, tableNumber: number) {
   const open = await prisma.tableSession.findFirst({
@@ -227,10 +225,8 @@ ordersRouter.get("/table-sessions/:sessionId", async (req, res) => {
   });
 });
 
-// PATCH /api/table-sessions/:sessionId/close — cierra la cuenta de la mesa
-// (cobrado). Solo se puede cerrar si todos sus pedidos ya están en un
-// estado final (entregado o cancelado): si queda algo en curso, cerrar la
-// mesa dejaría ese pedido "huérfano" de cara al ticket combinado.
+// PATCH /api/table-sessions/:sessionId/close — cierra la cuenta de la mesa.
+// Solo si todos sus pedidos están en estado final (entregado o cancelado).
 ordersRouter.patch("/table-sessions/:sessionId/close", async (req, res) => {
   const sessionId = Number(req.params.sessionId);
   const tableSession = await prisma.tableSession.findUnique({

@@ -15,10 +15,8 @@ import {
 } from "./shared";
 
 /**
- * Ficha de alcance del proyecto web: documento descriptivo (no legal) que
- * detalla, con más granularidad que el Anexo I del contrato, qué incluye
- * exactamente cada aplicación/servicio contratado — usando la descripción
- * de cada servicio cuando existe.
+ * Ficha de alcance del proyecto web: documento descriptivo (no legal) con
+ * más detalle que el Anexo I del contrato sobre qué incluye cada servicio.
  */
 export async function renderWebScopePdf(
   customer: DocumentCustomer,

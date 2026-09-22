@@ -13,17 +13,33 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "")
   .map((o) => o.trim())
   .filter(Boolean);
 
+// En producción, ALLOWED_ORIGINS debe estar configurada: con credentials:true,
+// "sin origins en la lista" no puede significar "aceptar cualquiera". Fuera
+// de producción se mantiene el comportamiento permisivo de siempre.
+const isProduction = process.env.NODE_ENV === "production";
+if (isProduction && allowedOrigins.length === 0) {
+  console.warn(
+    "⚠️  ALLOWED_ORIGINS no está configurada en producción: se rechazará cualquier origen con credenciales.",
+  );
+}
+
 export const app = express();
 
 app.use(
   cors({
     origin(origin, callback) {
       // Peticiones sin Origin (curl, health checks, server-to-server) se permiten.
-      if (
-        !origin ||
-        allowedOrigins.length === 0 ||
-        allowedOrigins.includes(origin)
-      ) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      // Fuera de producción, sin ALLOWED_ORIGINS configurada, se permite
+      // cualquier origen (comportamiento de desarrollo de siempre).
+      if (!isProduction && allowedOrigins.length === 0) {
         callback(null, true);
         return;
       }
@@ -32,10 +48,9 @@ app.use(
     credentials: true,
   }),
 );
-// Un backup completo puede incluir todos los PDFs de todos los clientes en
-// base64: necesita un límite de tamaño de body muy por encima del resto de
-// endpoints, así que se aplica solo a esta ruta, antes del express.json()
-// general (más abajo) que usa el límite por defecto.
+// Un backup completo incluye todos los PDFs en base64: necesita un límite de
+// body muy por encima del resto de rutas, así que se aplica solo aquí, antes
+// del express.json() general de más abajo.
 app.use("/api/backup/import", express.json({ limit: "500mb" }));
 app.use(express.json());
 app.use(cookieParser());
