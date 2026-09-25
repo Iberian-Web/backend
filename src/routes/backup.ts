@@ -11,7 +11,7 @@ backupRouter.use(requireSession(ADMIN_COOKIE_NAME, { customer: false }));
  * Versión del formato de backup. Si cambia la serialización, se sube este
  * número y se rechazan backups de versiones que ya no se sepan importar.
  */
-const BACKUP_VERSION = 2;
+const BACKUP_VERSION = 3;
 
 /**
  * Tablas con id autonumérico cuya secuencia de PostgreSQL hay que
@@ -33,6 +33,7 @@ const AUTOINCREMENT_TABLES: { schema: string; table: string }[] = [
   { schema: "restaurant", table: "table_sessions" },
   { schema: "restaurant", table: "orders" },
   { schema: "restaurant", table: "order_items" },
+  { schema: "restaurant", table: "restaurant_tables" },
 ];
 
 type Row = Record<string, unknown>;
@@ -84,6 +85,7 @@ backupRouter.get("/backup/export", async (_req, res) => {
     tableSessions,
     orders,
     orderItems,
+    restaurantTables,
   ] = await Promise.all([
     prisma.application.findMany(),
     prisma.service.findMany(),
@@ -101,6 +103,7 @@ backupRouter.get("/backup/export", async (_req, res) => {
     prisma.tableSession.findMany(),
     prisma.order.findMany(),
     prisma.orderItem.findMany(),
+    prisma.restaurantTable.findMany(),
   ]);
 
   const backup = {
@@ -123,6 +126,7 @@ backupRouter.get("/backup/export", async (_req, res) => {
       tableSessions,
       orders,
       orderItems,
+      restaurantTables,
     },
   };
 
@@ -195,6 +199,10 @@ backupRouter.post("/backup/import", async (req, res) => {
   ]);
   const orders = reviveDates(arr("orders"), ["createdAt", "updatedAt"]);
   const orderItems = arr("orderItems");
+  const restaurantTables = reviveDates(arr("restaurantTables"), [
+    "createdAt",
+    "updatedAt",
+  ]);
 
   const counts = {
     applications: applications.length,
@@ -213,6 +221,7 @@ backupRouter.post("/backup/import", async (req, res) => {
     tableSessions: tableSessions.length,
     orders: orders.length,
     orderItems: orderItems.length,
+    restaurantTables: restaurantTables.length,
   };
 
   await prisma.$transaction(
@@ -257,6 +266,10 @@ backupRouter.post("/backup/import", async (req, res) => {
       if (orders.length) await tx.order.createMany({ data: orders as never });
       if (orderItems.length)
         await tx.orderItem.createMany({ data: orderItems as never });
+      if (restaurantTables.length)
+        await tx.restaurantTable.createMany({
+          data: restaurantTables as never,
+        });
 
       // 3. Resincronizar las secuencias de autoincremento: si no, el
       //    próximo INSERT nuevo podría intentar reutilizar un id que el

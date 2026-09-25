@@ -10,6 +10,7 @@ const APP_CATALOGUE = [
     services: [
       { name: "Menú Digital", price: "19.99" },
       { name: "Pedidos", price: "59.99" },
+      { name: "Mapa", price: "29.99" },
       { name: "Reservas", price: "49.99" },
       { name: "Cocina", price: "29.99" },
       { name: "Analíticas", price: "39.99" },

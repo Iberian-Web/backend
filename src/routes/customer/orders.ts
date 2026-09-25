@@ -68,6 +68,10 @@ async function getOrOpenTableSession(instanceId: number, tableNumber: number) {
 }
 
 // GET /api/instances/:instanceId/orders — filtro opcional ?status=PENDING
+// Deliberadamente solo devuelve pedidos "activos" (la sesión de su mesa
+// sigue abierta): el histórico de mesas ya cerradas y cobradas puede crecer
+// sin límite con el tiempo, así que tiene su propio endpoint paginado más
+// abajo (GET /orders/completed) en vez de cargarse aquí de golpe.
 ordersRouter.get("/instances/:instanceId/orders", async (req, res) => {
   await ensureInstanceAccess(Number(req.params.instanceId), req.userId);
 
@@ -75,24 +79,108 @@ ordersRouter.get("/instances/:instanceId/orders", async (req, res) => {
   const orders = await prisma.order.findMany({
     where: {
       instanceId: Number(req.params.instanceId),
+      tableSession: { closedAt: null },
       ...(status && { status: status as OrderStatus }),
     },
     orderBy: { createdAt: "desc" },
-    include: { items: { orderBy: { id: "asc" } } },
+    include: {
+      items: { orderBy: { id: "asc" } },
+      tableSession: { select: { closedAt: true } },
+    },
   });
-  res.json(orders.map(withOrderTotal));
+  res.json(
+    orders.map(({ tableSession, ...order }) =>
+      withOrderTotal({
+        ...order,
+        tableSessionClosedAt: tableSession.closedAt,
+      }),
+    ),
+  );
 });
+
+const COMPLETED_PAGE_SIZE_DEFAULT = 30;
+const COMPLETED_PAGE_SIZE_MAX = 100;
+
+// GET /api/instances/:instanceId/orders/completed — pedidos cuya mesa ya se
+// cerró y cobró, paginados con cursor (?cursor=<id último visto>) en vez de
+// devolverlos todos de golpe: un restaurante con años de historial puede
+// tener decenas de miles y no tiene sentido cargarlos ni transferirlos
+// enteros solo para ver los últimos.
+ordersRouter.get(
+  "/instances/:instanceId/orders/completed",
+  async (req, res) => {
+    const instanceId = Number(req.params.instanceId);
+    await ensureInstanceAccess(instanceId, req.userId);
+
+    const cursor = req.query.cursor ? Number(req.query.cursor) : undefined;
+    const limit = Math.min(
+      COMPLETED_PAGE_SIZE_MAX,
+      Math.max(1, Number(req.query.limit) || COMPLETED_PAGE_SIZE_DEFAULT),
+    );
+    const search =
+      typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const searchNumber = Number(search);
+    const hasNumericSearch = search !== "" && Number.isInteger(searchNumber);
+
+    const orders = await prisma.order.findMany({
+      where: {
+        instanceId,
+        tableSession: { closedAt: { not: null } },
+        ...(cursor && { id: { lt: cursor } }),
+        ...(search && {
+          OR: [
+            { waiterName: { contains: search, mode: "insensitive" } },
+            {
+              items: {
+                some: { dishName: { contains: search, mode: "insensitive" } },
+              },
+            },
+            ...(hasNumericSearch
+              ? [{ tableNumber: searchNumber }, { id: searchNumber }]
+              : []),
+          ],
+        }),
+      },
+      orderBy: { id: "desc" },
+      take: limit + 1, // uno de más para saber si hay una página siguiente
+      include: {
+        items: { orderBy: { id: "asc" } },
+        tableSession: { select: { closedAt: true } },
+      },
+    });
+
+    const hasMore = orders.length > limit;
+    const page = orders.slice(0, limit);
+    const nextCursor = hasMore ? page[page.length - 1].id : null;
+
+    res.json({
+      orders: page.map(({ tableSession, ...order }) =>
+        withOrderTotal({
+          ...order,
+          tableSessionClosedAt: tableSession.closedAt,
+        }),
+      ),
+      nextCursor,
+    });
+  },
+);
 
 // GET /api/orders/:orderId — detalle de un único pedido (usado por la página de edición)
 ordersRouter.get("/orders/:orderId", async (req, res) => {
   const orderId = Number(req.params.orderId);
   const order = await prisma.order.findUnique({
     where: { id: orderId },
-    include: { items: { orderBy: { id: "asc" } } },
+    include: {
+      items: { orderBy: { id: "asc" } },
+      tableSession: { select: { closedAt: true } },
+    },
   });
   if (!order) throw new ApiError(404, "Pedido no encontrado");
   await ensureInstanceAccess(order.instanceId, req.userId);
-  res.json(withOrderTotal(order));
+  const { tableSession, ...rest } = order;
+  res.json(
+    withOrderTotal({ ...rest, tableSessionClosedAt: tableSession.closedAt }),
+  );
 });
 
 ordersRouter.post("/instances/:instanceId/orders", async (req, res) => {

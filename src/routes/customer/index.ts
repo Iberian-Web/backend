@@ -6,6 +6,7 @@ import { menusRouter } from "./menus";
 import { reservationsRouter } from "./reservations";
 import { ordersRouter } from "./orders";
 import { analyticsRouter } from "./analytics";
+import { tablesRouter } from "./tables";
 
 export const customerRouter = Router();
 customerRouter.use(requireSession(CUSTOMER_COOKIE_NAME, { customer: true }));
@@ -47,3 +48,4 @@ customerRouter.use(menusRouter);
 customerRouter.use(reservationsRouter);
 customerRouter.use(ordersRouter);
 customerRouter.use(analyticsRouter);
+customerRouter.use(tablesRouter);

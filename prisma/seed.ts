@@ -536,12 +536,81 @@ async function seedOrders() {
   }
 }
 
+// ─── Mapa de mesas de ejemplo ───────────────────────────────────────────
+
+// Coincide a propósito con los números de mesa usados en seedOrders() (2, 4,
+// 7, 9 y 11) para que el mapa de demo muestre de entrada mesas en distintos
+// estados (en cocina, listo para servir, libres) en vez de solo libres.
+const DEMO_TABLES: {
+  number: number;
+  name?: string;
+  seats: number;
+  shape: "RECTANGLE" | "ROUND";
+  posRow: number;
+  posCol: number;
+  width?: number;
+  height?: number;
+}[] = [
+  { number: 1, seats: 2, shape: "RECTANGLE", posRow: 0, posCol: 0 },
+  { number: 2, seats: 2, shape: "RECTANGLE", posRow: 0, posCol: 1 },
+  { number: 3, seats: 4, shape: "RECTANGLE", posRow: 0, posCol: 2 },
+  { number: 4, seats: 4, shape: "RECTANGLE", posRow: 0, posCol: 3 },
+  { number: 5, seats: 2, shape: "ROUND", posRow: 2, posCol: 0 },
+  { number: 6, seats: 2, shape: "ROUND", posRow: 2, posCol: 1 },
+  {
+    number: 7,
+    name: "Mesa grande",
+    seats: 6,
+    shape: "RECTANGLE",
+    posRow: 2,
+    posCol: 2,
+    width: 2,
+  },
+  { number: 8, seats: 4, shape: "RECTANGLE", posRow: 2, posCol: 4 },
+  { number: 9, seats: 2, shape: "RECTANGLE", posRow: 4, posCol: 0 },
+  { number: 10, seats: 4, shape: "ROUND", posRow: 4, posCol: 1 },
+  { number: 11, seats: 2, shape: "RECTANGLE", posRow: 4, posCol: 2 },
+  {
+    number: 12,
+    name: "Terraza",
+    seats: 8,
+    shape: "RECTANGLE",
+    posRow: 4,
+    posCol: 3,
+    width: 2,
+  },
+];
+
+async function seedTables() {
+  const mapaService = await prisma.service.findFirst({
+    where: { name: "Mapa" },
+  });
+  if (!mapaService) return;
+
+  const activeInstances = await prisma.instanceService.findMany({
+    where: { serviceId: mapaService.id, active: true },
+    select: { instanceId: true },
+  });
+
+  for (const { instanceId } of activeInstances) {
+    const alreadySeeded = await prisma.restaurantTable.count({
+      where: { instanceId },
+    });
+    if (alreadySeeded > 0) continue;
+
+    await prisma.restaurantTable.createMany({
+      data: DEMO_TABLES.map((t) => ({ ...t, instanceId })),
+    });
+  }
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────
 
 async function resetUserData() {
   await prisma.orderItem.deleteMany();
   await prisma.order.deleteMany();
   await prisma.tableSession.deleteMany();
+  await prisma.restaurantTable.deleteMany();
   await prisma.dish.deleteMany();
   await prisma.menu.deleteMany();
   await prisma.instanceService.deleteMany();
@@ -568,6 +637,7 @@ async function main() {
 
   await seedReservations();
   await seedOrders();
+  await seedTables();
 
   console.log("Seed completado.");
 }

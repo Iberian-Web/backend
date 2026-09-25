@@ -200,6 +200,7 @@ model Instance {
   reservations     Reservation[]
   orders           Order[]
   tableSessions    TableSession[]
+  restaurantTables RestaurantTable[]
 
   @@unique([userId, applicationId])
   @@index([applicationId])
@@ -355,6 +356,13 @@ model Dish {
   @@schema("restaurant")
 }
 
+enum TableShape {
+  RECTANGLE
+  ROUND
+
+  @@schema("restaurant")
+}
+
 /// Reserva de un cliente en un restaurante
 model Reservation {
   id              Int               @id @default(autoincrement())
@@ -373,6 +381,37 @@ model Reservation {
 
   @@index([instanceId])
   @@map("reservations")
+  @@schema("restaurant")
+}
+
+/// Mesa física del salón, colocada en el mapa de mesas (página "Mapa" del
+/// portal). `posRow`/`posCol` son las coordenadas (fila/columna, empezando
+/// en 0) de la celda superior-izquierda que ocupa dentro de la rejilla del
+/// mapa; `width`/`height` cuántas celdas ocupa en cada dirección (mesas
+/// grandes o uniones de mesas). Es un elemento puramente visual/organizativo:
+/// no participa en las relaciones de Order/TableSession, que siguen
+/// identificando la mesa solo por su número (`tableNumber`) — así el mapa se
+/// puede activar en un restaurante que ya tenga pedidos históricos sin
+/// migrar nada.
+model RestaurantTable {
+  id         Int        @id @default(autoincrement())
+  instanceId Int
+  number     Int
+  name       String     @default("")
+  seats      Int        @default(2)
+  shape      TableShape @default(RECTANGLE)
+  posRow     Int        @default(0)
+  posCol     Int        @default(0)
+  width      Int        @default(1)
+  height     Int        @default(1)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@unique([instanceId, number])
+  @@index([instanceId])
+  @@map("restaurant_tables")
   @@schema("restaurant")
 }
 
