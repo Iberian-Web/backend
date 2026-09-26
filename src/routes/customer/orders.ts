@@ -2,10 +2,20 @@ import { Router } from "express";
 import { OrderStatus } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
-import { ensureInstanceAccess } from "../../lib/access";
+import { ensureServiceAccess } from "../../lib/access";
 import { resolveWaiterName } from "../../middleware/session";
+import { logAudit } from "../../lib/audit";
+import { publish } from "../../lib/events";
 
 export const ordersRouter = Router();
+
+const ORDER_STATUSES: OrderStatus[] = [
+  "PENDING",
+  "IN_PROGRESS",
+  "READY",
+  "DELIVERED",
+  "CANCELLED",
+];
 
 type OrderItemInput = {
   dishName: string;
@@ -73,7 +83,11 @@ async function getOrOpenTableSession(instanceId: number, tableNumber: number) {
 // sin límite con el tiempo, así que tiene su propio endpoint paginado más
 // abajo (GET /orders/completed) en vez de cargarse aquí de golpe.
 ordersRouter.get("/instances/:instanceId/orders", async (req, res) => {
-  await ensureInstanceAccess(Number(req.params.instanceId), req.userId);
+  await ensureServiceAccess(
+    Number(req.params.instanceId),
+    ["Pedidos", "Cocina", "Mapa"],
+    req,
+  );
 
   const { status } = req.query;
   const orders = await prisma.order.findMany({
@@ -110,7 +124,7 @@ ordersRouter.get(
   "/instances/:instanceId/orders/completed",
   async (req, res) => {
     const instanceId = Number(req.params.instanceId);
-    await ensureInstanceAccess(instanceId, req.userId);
+    await ensureServiceAccess(instanceId, ["Pedidos", "Cocina", "Mapa"], req);
 
     const cursor = req.query.cursor ? Number(req.query.cursor) : undefined;
     const limit = Math.min(
@@ -176,7 +190,11 @@ ordersRouter.get("/orders/:orderId", async (req, res) => {
     },
   });
   if (!order) throw new ApiError(404, "Pedido no encontrado");
-  await ensureInstanceAccess(order.instanceId, req.userId);
+  await ensureServiceAccess(
+    order.instanceId,
+    ["Pedidos", "Cocina", "Mapa"],
+    req,
+  );
   const { tableSession, ...rest } = order;
   res.json(
     withOrderTotal({ ...rest, tableSessionClosedAt: tableSession.closedAt }),
@@ -185,7 +203,7 @@ ordersRouter.get("/orders/:orderId", async (req, res) => {
 
 ordersRouter.post("/instances/:instanceId/orders", async (req, res) => {
   const instanceId = Number(req.params.instanceId);
-  await ensureInstanceAccess(instanceId, req.userId);
+  await ensureServiceAccess(instanceId, ["Pedidos", "Cocina", "Mapa"], req);
 
   // Todo pedido nuevo entra directamente en cocina (IN_PROGRESS): ya no
   // existe el paso intermedio de "Nuevo · sin enviar" (PENDING), que solo
@@ -218,6 +236,11 @@ ordersRouter.post("/instances/:instanceId/orders", async (req, res) => {
     },
     include: { items: { orderBy: { id: "asc" } } },
   });
+  publish(instanceId, {
+    type: "order",
+    orderId: order.id,
+    tableNumber: order.tableNumber,
+  });
   res.status(201).json(withOrderTotal(order));
 });
 
@@ -225,23 +248,86 @@ ordersRouter.put("/orders/:orderId", async (req, res) => {
   const orderId = Number(req.params.orderId);
   const existing = await prisma.order.findUnique({ where: { id: orderId } });
   if (!existing) throw new ApiError(404, "Pedido no encontrado");
-  await ensureInstanceAccess(existing.instanceId, req.userId);
+  await ensureServiceAccess(
+    existing.instanceId,
+    ["Pedidos", "Cocina", "Mapa"],
+    req,
+  );
 
-  const { tableNumber, notes, status, items } = req.body;
+  const { tableNumber, notes, status, items, expectedUpdatedAt } = req.body;
   const parsedItems = items !== undefined ? parseOrderItems(items) : undefined;
+  if (status !== undefined && !ORDER_STATUSES.includes(status)) {
+    throw new ApiError(400, "Estado de pedido inválido");
+  }
 
-  const updated = await prisma.order.update({
-    where: { id: orderId },
-    data: {
-      ...(tableNumber !== undefined && { tableNumber: Number(tableNumber) }),
-      ...(notes !== undefined && { notes }),
-      ...(status !== undefined && { status }),
-      // Reemplaza todas las líneas del pedido si se envía `items` (modo edición completa)
-      ...(parsedItems !== undefined && {
-        items: { deleteMany: {}, create: parsedItems },
-      }),
-    },
-    include: { items: { orderBy: { id: "asc" } } },
+  // Control de concurrencia optimista: si el cliente nos manda el
+  // `updatedAt` que tenía cuando cargó el pedido y ya no coincide con el
+  // actual, es que otra persona lo modificó mientras tanto (p. ej. un
+  // camarero lo cancela mientras otro lo marca "Listo") — se rechaza en
+  // vez de dejar que gane silenciosamente quien escriba último.
+  if (expectedUpdatedAt !== undefined) {
+    const expected = new Date(expectedUpdatedAt);
+    if (Number.isNaN(expected.getTime())) {
+      throw new ApiError(400, "expectedUpdatedAt inválido");
+    }
+    if (expected.getTime() !== existing.updatedAt.getTime()) {
+      throw new ApiError(
+        409,
+        "Este pedido se modificó mientras tanto (otra persona lo cambió). Recarga y vuelve a intentarlo.",
+      );
+    }
+  }
+
+  const willCancel = status === "CANCELLED" && existing.status !== "CANCELLED";
+
+  const updated = await prisma.$transaction(async (tx) => {
+    // Repite la comprobación dentro de la transacción para acotar al
+    // máximo la ventana entre "leer" y "escribir".
+    if (expectedUpdatedAt !== undefined) {
+      const current = await tx.order.findUnique({
+        where: { id: orderId },
+        select: { updatedAt: true },
+      });
+      if (
+        !current ||
+        current.updatedAt.getTime() !== existing.updatedAt.getTime()
+      ) {
+        throw new ApiError(
+          409,
+          "Este pedido se modificó mientras tanto (otra persona lo cambió). Recarga y vuelve a intentarlo.",
+        );
+      }
+    }
+    return tx.order.update({
+      where: { id: orderId },
+      data: {
+        ...(tableNumber !== undefined && { tableNumber: Number(tableNumber) }),
+        ...(notes !== undefined && { notes }),
+        ...(status !== undefined && { status }),
+        // Reemplaza todas las líneas del pedido si se envía `items` (modo edición completa)
+        ...(parsedItems !== undefined && {
+          items: { deleteMany: {}, create: parsedItems },
+        }),
+      },
+      include: { items: { orderBy: { id: "asc" } } },
+    });
+  });
+
+  if (willCancel) {
+    const actorName = await resolveWaiterName(req);
+    await logAudit({
+      instanceId: existing.instanceId,
+      action: "ORDER_CANCELLED",
+      actorName,
+      tableNumber: existing.tableNumber,
+      summary: `Pedido #${existing.id} · ${updated.items.length} línea(s)`,
+    });
+  }
+
+  publish(existing.instanceId, {
+    type: "order",
+    orderId,
+    tableNumber: existing.tableNumber,
   });
   res.json(withOrderTotal(updated));
 });
@@ -261,7 +347,11 @@ ordersRouter.get("/table-sessions/:sessionId", async (req, res) => {
     },
   });
   if (!tableSession) throw new ApiError(404, "Sesión de mesa no encontrada");
-  await ensureInstanceAccess(tableSession.instanceId, req.userId);
+  await ensureServiceAccess(
+    tableSession.instanceId,
+    ["Pedidos", "Cocina", "Mapa"],
+    req,
+  );
 
   // Los pedidos cancelados no cuentan para la cuenta combinada, igual que
   // en las analíticas de facturación.
@@ -322,7 +412,11 @@ ordersRouter.patch("/table-sessions/:sessionId/close", async (req, res) => {
     include: { orders: true },
   });
   if (!tableSession) throw new ApiError(404, "Sesión de mesa no encontrada");
-  await ensureInstanceAccess(tableSession.instanceId, req.userId);
+  await ensureServiceAccess(
+    tableSession.instanceId,
+    ["Pedidos", "Cocina", "Mapa"],
+    req,
+  );
 
   if (tableSession.closedAt) {
     throw new ApiError(400, "Esta mesa ya está cerrada");
@@ -341,14 +435,51 @@ ordersRouter.patch("/table-sessions/:sessionId/close", async (req, res) => {
     where: { id: sessionId },
     data: { closedAt: new Date() },
   });
+
+  const actorName = await resolveWaiterName(req);
+  const total = tableSession.orders.filter(
+    (o) => o.status !== "CANCELLED",
+  ).length;
+  await logAudit({
+    instanceId: tableSession.instanceId,
+    action: "TABLE_SESSION_CLOSED",
+    actorName,
+    tableNumber: tableSession.tableNumber,
+    summary: `${total} pedido(s) cobrados`,
+  });
+  publish(tableSession.instanceId, {
+    type: "table-session",
+    tableNumber: tableSession.tableNumber,
+  });
   res.json(updated);
 });
 
 ordersRouter.delete("/orders/:orderId", async (req, res) => {
   const orderId = Number(req.params.orderId);
-  const existing = await prisma.order.findUnique({ where: { id: orderId } });
+  const existing = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { items: true },
+  });
   if (!existing) throw new ApiError(404, "Pedido no encontrado");
-  await ensureInstanceAccess(existing.instanceId, req.userId);
+  await ensureServiceAccess(
+    existing.instanceId,
+    ["Pedidos", "Cocina", "Mapa"],
+    req,
+  );
   await prisma.order.delete({ where: { id: orderId } });
+
+  const actorName = await resolveWaiterName(req);
+  await logAudit({
+    instanceId: existing.instanceId,
+    action: "ORDER_DELETED",
+    actorName,
+    tableNumber: existing.tableNumber,
+    summary: `Pedido #${existing.id} · ${existing.items.length} línea(s) · ${existing.status}`,
+  });
+  publish(existing.instanceId, {
+    type: "order",
+    orderId,
+    tableNumber: existing.tableNumber,
+  });
   res.status(204).end();
 });

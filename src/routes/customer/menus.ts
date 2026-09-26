@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
-import { ensureInstanceAccess } from "../../lib/access";
+import { ensureServiceAccess } from "../../lib/access";
 import { DEFAULT_MENU_SECTIONS } from "../../catalogue";
 
 export const menusRouter = Router();
@@ -9,7 +9,14 @@ export const menusRouter = Router();
 // ── MENÚS ──────────────────────────────────────────────────────────────
 
 menusRouter.get("/instances/:instanceId/menus", async (req, res) => {
-  await ensureInstanceAccess(Number(req.params.instanceId), req.userId);
+  // Lectura también permitida a Pedidos/Mapa: para crear un pedido hace
+  // falta poder ver la carta aunque la credencial no tenga "Menú Digital"
+  // (edición) asignado.
+  await ensureServiceAccess(
+    Number(req.params.instanceId),
+    ["Menú Digital", "Pedidos", "Mapa"],
+    req,
+  );
   const menus = await prisma.menu.findMany({
     where: { instanceId: Number(req.params.instanceId) },
     orderBy: { createdAt: "desc" },
@@ -19,7 +26,7 @@ menusRouter.get("/instances/:instanceId/menus", async (req, res) => {
 });
 
 menusRouter.post("/instances/:instanceId/menus", async (req, res) => {
-  await ensureInstanceAccess(Number(req.params.instanceId), req.userId);
+  await ensureServiceAccess(Number(req.params.instanceId), "Menú Digital", req);
   const menu = await prisma.menu.create({
     data: { instanceId: Number(req.params.instanceId), name: req.body.name },
     include: { dishes: true },
@@ -32,7 +39,7 @@ menusRouter.put("/menus/:menuId", async (req, res) => {
     where: { id: Number(req.params.menuId) },
   });
   if (!existingMenu) throw new ApiError(404, "Menú no encontrado");
-  await ensureInstanceAccess(existingMenu.instanceId, req.userId);
+  await ensureServiceAccess(existingMenu.instanceId, "Menú Digital", req);
 
   const menu = await prisma.menu.update({
     where: { id: Number(req.params.menuId) },
@@ -47,7 +54,7 @@ menusRouter.delete("/menus/:menuId", async (req, res) => {
     where: { id: Number(req.params.menuId) },
   });
   if (!menu) throw new ApiError(404, "Menú no encontrado");
-  await ensureInstanceAccess(menu.instanceId, req.userId);
+  await ensureServiceAccess(menu.instanceId, "Menú Digital", req);
   await prisma.menu.delete({ where: { id: Number(req.params.menuId) } });
   res.status(204).end();
 });
@@ -59,7 +66,7 @@ menusRouter.delete("/menus/:menuId", async (req, res) => {
 
 menusRouter.get("/instances/:instanceId/menu-sections", async (req, res) => {
   const instanceId = Number(req.params.instanceId);
-  await ensureInstanceAccess(instanceId, req.userId);
+  await ensureServiceAccess(instanceId, "Menú Digital", req);
   let sections = await prisma.menuSection.findMany({
     where: { instanceId },
     orderBy: { position: "asc" },
@@ -85,7 +92,7 @@ menusRouter.get("/instances/:instanceId/menu-sections", async (req, res) => {
 
 menusRouter.post("/instances/:instanceId/menu-sections", async (req, res) => {
   const instanceId = Number(req.params.instanceId);
-  await ensureInstanceAccess(instanceId, req.userId);
+  await ensureServiceAccess(instanceId, "Menú Digital", req);
 
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
   if (!name) throw new ApiError(400, "El nombre de la sección es requerido");
@@ -110,7 +117,7 @@ menusRouter.put("/menu-sections/:sectionId", async (req, res) => {
     where: { id: Number(req.params.sectionId) },
   });
   if (!section) throw new ApiError(404, "Sección no encontrada");
-  await ensureInstanceAccess(section.instanceId, req.userId);
+  await ensureServiceAccess(section.instanceId, "Menú Digital", req);
 
   const nextName =
     typeof req.body.name === "string" ? req.body.name.trim() : undefined;
@@ -160,7 +167,7 @@ menusRouter.delete("/menu-sections/:sectionId", async (req, res) => {
     where: { id: Number(req.params.sectionId) },
   });
   if (!section) throw new ApiError(404, "Sección no encontrada");
-  await ensureInstanceAccess(section.instanceId, req.userId);
+  await ensureServiceAccess(section.instanceId, "Menú Digital", req);
 
   await prisma.$transaction([
     // Los platos que estaban en esta sección quedan sin sección en vez de
@@ -184,7 +191,7 @@ menusRouter.get("/menus/:menuId/dishes", async (req, res) => {
     where: { id: Number(req.params.menuId) },
   });
   if (!menu) throw new ApiError(404, "Menú no encontrado");
-  await ensureInstanceAccess(menu.instanceId, req.userId);
+  await ensureServiceAccess(menu.instanceId, "Menú Digital", req);
   const dishes = await prisma.dish.findMany({
     where: { menuId: Number(req.params.menuId) },
     orderBy: { id: "asc" },
@@ -197,7 +204,7 @@ menusRouter.post("/menus/:menuId/dishes", async (req, res) => {
     where: { id: Number(req.params.menuId) },
   });
   if (!menu) throw new ApiError(404, "Menú no encontrado");
-  await ensureInstanceAccess(menu.instanceId, req.userId);
+  await ensureServiceAccess(menu.instanceId, "Menú Digital", req);
 
   const { name, description, price, category, allergens } = req.body;
   const dish = await prisma.dish.create({
@@ -220,7 +227,7 @@ menusRouter.put("/dishes/:dishId", async (req, res) => {
   if (!dish) throw new ApiError(404, "Plato no encontrado");
   const menu = await prisma.menu.findUnique({ where: { id: dish.menuId } });
   if (!menu) throw new ApiError(404, "Menú no encontrado");
-  await ensureInstanceAccess(menu.instanceId, req.userId);
+  await ensureServiceAccess(menu.instanceId, "Menú Digital", req);
 
   const { name, description, price, category, allergens } = req.body;
   const updated = await prisma.dish.update({
@@ -243,7 +250,7 @@ menusRouter.delete("/dishes/:dishId", async (req, res) => {
   if (!dish) throw new ApiError(404, "Plato no encontrado");
   const menu = await prisma.menu.findUnique({ where: { id: dish.menuId } });
   if (!menu) throw new ApiError(404, "Menú no encontrado");
-  await ensureInstanceAccess(menu.instanceId, req.userId);
+  await ensureServiceAccess(menu.instanceId, "Menú Digital", req);
   await prisma.dish.delete({ where: { id: Number(req.params.dishId) } });
   res.status(204).end();
 });

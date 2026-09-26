@@ -201,6 +201,7 @@ model Instance {
   orders           Order[]
   tableSessions    TableSession[]
   restaurantTables RestaurantTable[]
+  auditLogs        AuditLog[]
 
   @@unique([userId, applicationId])
   @@index([applicationId])
@@ -287,6 +288,19 @@ enum ReservationStatus {
   CANCELLED
   COMPLETED
   NO_SHOW
+
+  @@schema("restaurant")
+}
+
+/// Acción registrada en el histórico de auditoría (ver `AuditLog`). Cubre las
+/// operaciones destructivas o irreversibles del portal: quién cerró, canceló
+/// o eliminó qué y cuándo, para poder responder "¿qué pasó con la mesa 7
+/// anoche?" sin depender de la memoria de nadie.
+enum AuditAction {
+  ORDER_CANCELLED
+  ORDER_DELETED
+  TABLE_SESSION_CLOSED
+  TABLE_DELETED
 
   @@schema("restaurant")
 }
@@ -474,5 +488,26 @@ model OrderItem {
 
   @@index([orderId])
   @@map("order_items")
+  @@schema("restaurant")
+}
+
+/// Histórico de operaciones irreversibles (cancelar/eliminar un pedido,
+/// cerrar una mesa, eliminar una mesa del mapa): quién lo hizo, cuándo y un
+/// resumen legible de qué era, para poder responder después "¿qué pasó con
+/// la mesa 7 anoche?" sin haber tenido que evitar el borrado físico en sí.
+/// No se puede editar ni eliminar desde la API — solo se crea.
+model AuditLog {
+  id         Int         @id @default(autoincrement())
+  instanceId Int
+  action     AuditAction
+  actorName  String      @default("") // camarero/a (o "Cliente") resuelto desde la sesión, nunca del body
+  tableNumber Int?
+  summary    String      @default("") // texto libre: p.ej. "3 líneas · 42,50 €"
+  createdAt  DateTime    @default(now())
+
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@index([instanceId, createdAt])
+  @@map("audit_logs")
   @@schema("restaurant")
 }

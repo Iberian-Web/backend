@@ -2,7 +2,7 @@ import { Router } from "express";
 import { ReservationStatus } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
-import { ensureInstanceAccess } from "../../lib/access";
+import { ensureServiceAccess } from "../../lib/access";
 
 export const reservationsRouter = Router();
 
@@ -10,7 +10,7 @@ export const reservationsRouter = Router();
 reservationsRouter.get(
   "/instances/:instanceId/reservations",
   async (req, res) => {
-    await ensureInstanceAccess(Number(req.params.instanceId), req.userId);
+    await ensureServiceAccess(Number(req.params.instanceId), "Reservas", req);
 
     const { date, status } = req.query;
     let dateFilter: { gte: Date; lt: Date } | undefined;
@@ -37,7 +37,7 @@ reservationsRouter.get(
 reservationsRouter.post(
   "/instances/:instanceId/reservations",
   async (req, res) => {
-    await ensureInstanceAccess(Number(req.params.instanceId), req.userId);
+    await ensureServiceAccess(Number(req.params.instanceId), "Reservas", req);
 
     const {
       customerName,
@@ -76,7 +76,7 @@ reservationsRouter.put("/reservations/:reservationId", async (req, res) => {
     where: { id: reservationId },
   });
   if (!existing) throw new ApiError(404, "Reserva no encontrada");
-  await ensureInstanceAccess(existing.instanceId, req.userId);
+  await ensureServiceAccess(existing.instanceId, "Reservas", req);
 
   const {
     customerName,
@@ -110,7 +110,7 @@ reservationsRouter.delete("/reservations/:reservationId", async (req, res) => {
     where: { id: reservationId },
   });
   if (!existing) throw new ApiError(404, "Reserva no encontrada");
-  await ensureInstanceAccess(existing.instanceId, req.userId);
+  await ensureServiceAccess(existing.instanceId, "Reservas", req);
   await prisma.reservation.delete({ where: { id: reservationId } });
   res.status(204).end();
 });

@@ -2,7 +2,10 @@ import { Router } from "express";
 import { Prisma, TableShape } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
-import { ensureInstanceAccess } from "../../lib/access";
+import { ensureServiceAccess } from "../../lib/access";
+import { resolveWaiterName } from "../../middleware/session";
+import { logAudit } from "../../lib/audit";
+import { publish } from "../../lib/events";
 
 export const tablesRouter = Router();
 
@@ -140,7 +143,7 @@ function deriveStatus(billableOrders: { status: string }[]): TableMapStatus {
 // GET /api/instances/:instanceId/tables — mapa de mesas con su estado actual
 tablesRouter.get("/instances/:instanceId/tables", async (req, res) => {
   const instanceId = Number(req.params.instanceId);
-  await ensureInstanceAccess(instanceId, req.userId);
+  await ensureServiceAccess(instanceId, "Mapa", req);
 
   const [tables, openSessions] = await Promise.all([
     prisma.restaurantTable.findMany({
@@ -215,7 +218,7 @@ tablesRouter.get("/instances/:instanceId/tables", async (req, res) => {
 
 tablesRouter.post("/instances/:instanceId/tables", async (req, res) => {
   const instanceId = Number(req.params.instanceId);
-  await ensureInstanceAccess(instanceId, req.userId);
+  await ensureServiceAccess(instanceId, "Mapa", req);
 
   const input = parseTableInput(req.body ?? {}, { partial: false });
 
@@ -233,6 +236,7 @@ tablesRouter.post("/instances/:instanceId/tables", async (req, res) => {
         height: input.height!,
       },
     });
+    publish(instanceId, { type: "table" });
     res.status(201).json(table);
   } catch (err) {
     if (
@@ -254,15 +258,47 @@ tablesRouter.put("/tables/:tableId", async (req, res) => {
     where: { id: tableId },
   });
   if (!existing) throw new ApiError(404, "Mesa no encontrada");
-  await ensureInstanceAccess(existing.instanceId, req.userId);
+  await ensureServiceAccess(existing.instanceId, "Mapa", req);
 
   const input = parseTableInput(req.body ?? {}, { partial: true });
+  const { expectedUpdatedAt } = req.body ?? {};
+
+  // Mismo control de concurrencia optimista que en pedidos: si dos personas
+  // editan/arrastran la misma mesa del mapa a la vez, la segunda escritura
+  // se rechaza en vez de pisar silenciosamente a la primera.
+  if (expectedUpdatedAt !== undefined) {
+    const expected = new Date(expectedUpdatedAt);
+    if (Number.isNaN(expected.getTime())) {
+      throw new ApiError(400, "expectedUpdatedAt inválido");
+    }
+    if (expected.getTime() !== existing.updatedAt.getTime()) {
+      throw new ApiError(
+        409,
+        "Esta mesa se modificó mientras tanto (otra persona la cambió). Recarga el mapa e inténtalo de nuevo.",
+      );
+    }
+  }
 
   try {
-    const updated = await prisma.restaurantTable.update({
-      where: { id: tableId },
-      data: input,
+    const updated = await prisma.$transaction(async (tx) => {
+      if (expectedUpdatedAt !== undefined) {
+        const current = await tx.restaurantTable.findUnique({
+          where: { id: tableId },
+          select: { updatedAt: true },
+        });
+        if (
+          !current ||
+          current.updatedAt.getTime() !== existing.updatedAt.getTime()
+        ) {
+          throw new ApiError(
+            409,
+            "Esta mesa se modificó mientras tanto (otra persona la cambió). Recarga el mapa e inténtalo de nuevo.",
+          );
+        }
+      }
+      return tx.restaurantTable.update({ where: { id: tableId }, data: input });
     });
+    publish(existing.instanceId, { type: "table" });
     res.json(updated);
   } catch (err) {
     if (
@@ -284,7 +320,52 @@ tablesRouter.delete("/tables/:tableId", async (req, res) => {
     where: { id: tableId },
   });
   if (!existing) throw new ApiError(404, "Mesa no encontrada");
-  await ensureInstanceAccess(existing.instanceId, req.userId);
+  await ensureServiceAccess(existing.instanceId, "Mapa", req);
   await prisma.restaurantTable.delete({ where: { id: tableId } });
+
+  const actorName = await resolveWaiterName(req);
+  await logAudit({
+    instanceId: existing.instanceId,
+    action: "TABLE_DELETED",
+    actorName,
+    tableNumber: existing.number,
+    summary: existing.name
+      ? `Mesa ${existing.number} (${existing.name})`
+      : `Mesa ${existing.number}`,
+  });
+  publish(existing.instanceId, { type: "table" });
   res.status(204).end();
+});
+
+const AUDIT_LOG_LIMIT_DEFAULT = 50;
+const AUDIT_LOG_LIMIT_MAX = 200;
+
+// GET /api/instances/:instanceId/audit-log?tableNumber=7 — histórico de
+// operaciones irreversibles (pedidos cancelados/eliminados, mesas cerradas
+// o eliminadas), opcionalmente filtrado por mesa. Pensado para responder
+// "¿qué pasó con la mesa 7 anoche?" sin tener que fiarse de la memoria de
+// nadie — ver AuditLog en el schema.
+tablesRouter.get("/instances/:instanceId/audit-log", async (req, res) => {
+  const instanceId = Number(req.params.instanceId);
+  await ensureServiceAccess(instanceId, ["Mapa", "Pedidos", "Analíticas"], req);
+
+  const tableNumber =
+    req.query.tableNumber !== undefined
+      ? Number(req.query.tableNumber)
+      : undefined;
+  const limit = Math.min(
+    AUDIT_LOG_LIMIT_MAX,
+    Math.max(1, Number(req.query.limit) || AUDIT_LOG_LIMIT_DEFAULT),
+  );
+
+  const logs = await prisma.auditLog.findMany({
+    where: {
+      instanceId,
+      ...(tableNumber !== undefined &&
+        Number.isInteger(tableNumber) && { tableNumber }),
+    },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
+  res.json(logs);
 });
