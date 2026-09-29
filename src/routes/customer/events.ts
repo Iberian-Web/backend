@@ -6,12 +6,8 @@ export const eventsRouter = Router();
 
 const HEARTBEAT_MS = 25_000;
 
-// GET /api/instances/:instanceId/events — stream de Server-Sent Events con
-// avisos de "algo cambió" (pedido creado/actualizado/eliminado, mesa
-// cerrada) para que Pedidos, Cocina y el Mapa dejen de depender solo de
-// sondear la API cada pocos segundos. El mensaje no lleva el dato
-// completo, solo el aviso: el cliente reacciona re-consultando su propia
-// query (más simple que mantener dos fuentes de verdad sincronizadas).
+// Stream SSE de avisos de "algo cambió" (pedido, mesa…). Solo notifica;
+// el cliente reacciona re-consultando su propia query.
 eventsRouter.get("/instances/:instanceId/events", async (req, res) => {
   const instanceId = Number(req.params.instanceId);
   await ensureServiceAccess(instanceId, ["Pedidos", "Cocina", "Mapa"], req);

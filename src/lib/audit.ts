@@ -1,13 +1,8 @@
 import { AuditAction } from "@prisma/client";
 import { prisma } from "./prisma";
 
-/**
- * Registra una operación irreversible (cancelar/eliminar un pedido, cerrar
- * una mesa, eliminar una mesa del mapa) para poder reconstruir después qué
- * pasó, quién lo hizo y cuándo. Nunca lanza: un fallo al auditar no debe
- * tumbar la operación real que se está auditando, así que cualquier error
- * solo se registra en consola.
- */
+/** Registra una operación irreversible (cancelar/eliminar pedido, cerrar
+ *  mesa...). Nunca lanza: un fallo al auditar no debe tumbar la operación real. */
 export async function logAudit(entry: {
   instanceId: number;
   action: AuditAction;

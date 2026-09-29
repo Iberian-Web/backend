@@ -1,11 +1,12 @@
 import { Router } from "express";
-import { OrderStatus } from "@prisma/client";
+import { OrderStatus, Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
 import { ensureServiceAccess } from "../../lib/access";
 import { resolveWaiterName } from "../../middleware/session";
 import { logAudit } from "../../lib/audit";
 import { publish } from "../../lib/events";
+import { checkNotStale, checkNotStaleInTx } from "../../lib/concurrency";
 
 export const ordersRouter = Router();
 
@@ -72,16 +73,50 @@ async function getOrOpenTableSession(instanceId: number, tableNumber: number) {
   const open = await prisma.tableSession.findFirst({
     where: { instanceId, tableNumber, closedAt: null },
     orderBy: { openedAt: "desc" },
+    include: { orders: { select: { status: true } } },
   });
-  if (open) return open;
+  if (open) {
+    const hasBillable = open.orders.some((o) => o.status !== "CANCELLED");
+    if (hasBillable) return open;
+    // Sesión abierta pero sin nada facturable (p. ej. de antes de este
+    // arreglo): se cierra aquí mismo en vez de resucitarla con el pedido
+    // nuevo — ver closeSessionIfNowEmpty, que cubre el caso normal.
+    await prisma.tableSession.update({
+      where: { id: open.id },
+      data: { closedAt: new Date() },
+    });
+  }
   return prisma.tableSession.create({ data: { instanceId, tableNumber } });
 }
 
-// GET /api/instances/:instanceId/orders — filtro opcional ?status=PENDING
-// Deliberadamente solo devuelve pedidos "activos" (la sesión de su mesa
-// sigue abierta): el histórico de mesas ya cerradas y cobradas puede crecer
-// sin límite con el tiempo, así que tiene su propio endpoint paginado más
-// abajo (GET /orders/completed) en vez de cargarse aquí de golpe.
+/**
+ * Si tras cancelar o eliminar un pedido no queda ningún pedido facturable
+ * en su sesión, la sesión se cierra sola: el Mapa ya la trataba como mesa
+ * LIBRE en ese caso (ver `deriveStatus`), pero si no se cierra de verdad
+ * aquí, el próximo pedido para esa misma mesa reutiliza esta sesión abierta
+ * (`getOrOpenTableSession` solo mira `closedAt`) y resucita ese pedido
+ * cancelado/eliminado mezclado con los nuevos en la vista de la mesa.
+ */
+async function closeSessionIfNowEmpty(
+  tx: Prisma.TransactionClient,
+  tableSessionId: number,
+): Promise<boolean> {
+  const session = await tx.tableSession.findUnique({
+    where: { id: tableSessionId },
+    include: { orders: { select: { status: true } } },
+  });
+  if (!session || session.closedAt) return false;
+  const stillBillable = session.orders.some((o) => o.status !== "CANCELLED");
+  if (stillBillable) return false;
+  await tx.tableSession.update({
+    where: { id: tableSessionId },
+    data: { closedAt: new Date() },
+  });
+  return true;
+}
+
+// Solo pedidos "activos" (sesión de mesa abierta); el histórico paginado
+// vive en GET /orders/completed más abajo.
 ordersRouter.get("/instances/:instanceId/orders", async (req, res) => {
   await ensureServiceAccess(
     Number(req.params.instanceId),
@@ -115,11 +150,8 @@ ordersRouter.get("/instances/:instanceId/orders", async (req, res) => {
 const COMPLETED_PAGE_SIZE_DEFAULT = 30;
 const COMPLETED_PAGE_SIZE_MAX = 100;
 
-// GET /api/instances/:instanceId/orders/completed — pedidos cuya mesa ya se
-// cerró y cobró, paginados con cursor (?cursor=<id último visto>) en vez de
-// devolverlos todos de golpe: un restaurante con años de historial puede
-// tener decenas de miles y no tiene sentido cargarlos ni transferirlos
-// enteros solo para ver los últimos.
+// Pedidos de mesas ya cerradas/cobradas, paginados con cursor
+// (?cursor=<id último visto>) — pueden ser decenas de miles con el tiempo.
 ordersRouter.get(
   "/instances/:instanceId/orders/completed",
   async (req, res) => {
@@ -236,7 +268,7 @@ ordersRouter.post("/instances/:instanceId/orders", async (req, res) => {
     },
     include: { items: { orderBy: { id: "asc" } } },
   });
-  publish(instanceId, {
+  await publish(instanceId, {
     type: "order",
     orderId: order.id,
     tableNumber: order.tableNumber,
@@ -259,46 +291,31 @@ ordersRouter.put("/orders/:orderId", async (req, res) => {
   if (status !== undefined && !ORDER_STATUSES.includes(status)) {
     throw new ApiError(400, "Estado de pedido inválido");
   }
+  const staleMsg =
+    "Este pedido se modificó mientras tanto (otra persona lo cambió). Recarga y vuelve a intentarlo.";
 
-  // Control de concurrencia optimista: si el cliente nos manda el
-  // `updatedAt` que tenía cuando cargó el pedido y ya no coincide con el
-  // actual, es que otra persona lo modificó mientras tanto (p. ej. un
-  // camarero lo cancela mientras otro lo marca "Listo") — se rechaza en
-  // vez de dejar que gane silenciosamente quien escriba último.
-  if (expectedUpdatedAt !== undefined) {
-    const expected = new Date(expectedUpdatedAt);
-    if (Number.isNaN(expected.getTime())) {
-      throw new ApiError(400, "expectedUpdatedAt inválido");
-    }
-    if (expected.getTime() !== existing.updatedAt.getTime()) {
-      throw new ApiError(
-        409,
-        "Este pedido se modificó mientras tanto (otra persona lo cambió). Recarga y vuelve a intentarlo.",
-      );
-    }
-  }
+  // P. ej. un camarero cancela el pedido mientras otro lo marca "Listo":
+  // se rechaza la segunda escritura en vez de dejar que gane la última.
+  checkNotStale(expectedUpdatedAt, existing.updatedAt, staleMsg);
 
   const willCancel = status === "CANCELLED" && existing.status !== "CANCELLED";
+  // Al marcar Listo (o saltar directo a Entregado) cocina ha terminado todo
+  // lo que aún estaba pendiente: se sella esa foto para que, si más tarde
+  // se añaden platos nuevos a este mismo pedido, no se confundan con estos.
+  const willMarkPrepared = status === "READY" || status === "DELIVERED";
 
   const updated = await prisma.$transaction(async (tx) => {
-    // Repite la comprobación dentro de la transacción para acotar al
-    // máximo la ventana entre "leer" y "escribir".
-    if (expectedUpdatedAt !== undefined) {
-      const current = await tx.order.findUnique({
-        where: { id: orderId },
-        select: { updatedAt: true },
-      });
-      if (
-        !current ||
-        current.updatedAt.getTime() !== existing.updatedAt.getTime()
-      ) {
-        throw new ApiError(
-          409,
-          "Este pedido se modificó mientras tanto (otra persona lo cambió). Recarga y vuelve a intentarlo.",
-        );
-      }
-    }
-    return tx.order.update({
+    await checkNotStaleInTx(
+      () =>
+        tx.order.findUnique({
+          where: { id: orderId },
+          select: { updatedAt: true },
+        }),
+      expectedUpdatedAt,
+      existing.updatedAt,
+      staleMsg,
+    );
+    await tx.order.update({
       where: { id: orderId },
       data: {
         ...(tableNumber !== undefined && { tableNumber: Number(tableNumber) }),
@@ -309,8 +326,21 @@ ordersRouter.put("/orders/:orderId", async (req, res) => {
           items: { deleteMany: {}, create: parsedItems },
         }),
       },
+    });
+    if (willMarkPrepared) {
+      await tx.orderItem.updateMany({
+        where: { orderId, preparedAt: null },
+        data: { preparedAt: new Date() },
+      });
+    }
+    const sessionAutoClosed = willCancel
+      ? await closeSessionIfNowEmpty(tx, existing.tableSessionId)
+      : false;
+    const order = await tx.order.findUniqueOrThrow({
+      where: { id: orderId },
       include: { items: { orderBy: { id: "asc" } } },
     });
+    return { order, sessionAutoClosed };
   });
 
   if (willCancel) {
@@ -320,11 +350,111 @@ ordersRouter.put("/orders/:orderId", async (req, res) => {
       action: "ORDER_CANCELLED",
       actorName,
       tableNumber: existing.tableNumber,
-      summary: `Pedido #${existing.id} · ${updated.items.length} línea(s)`,
+      summary: `Pedido #${existing.id} · ${updated.order.items.length} línea(s)`,
     });
+    if (updated.sessionAutoClosed) {
+      await logAudit({
+        instanceId: existing.instanceId,
+        action: "TABLE_SESSION_CLOSED",
+        actorName,
+        tableNumber: existing.tableNumber,
+        summary: "Cerrada automáticamente: no quedaban pedidos facturables",
+      });
+    }
   }
 
-  publish(existing.instanceId, {
+  await publish(existing.instanceId, {
+    type: "order",
+    orderId,
+    tableNumber: existing.tableNumber,
+  });
+  if (updated.sessionAutoClosed) {
+    await publish(existing.instanceId, {
+      type: "table-session",
+      tableNumber: existing.tableNumber,
+    });
+  }
+  res.json(withOrderTotal(updated.order));
+});
+
+// Añade líneas nuevas a un pedido ya existente en vez de crear un ticket
+// aparte: es lo que usa "Añadir a la comanda" desde el Mapa para que una
+// misma mesa siga sumando platos al mismo pedido, en lugar de trocearlo en
+// varios tickets. Si ya estaba Listo/Entregado, vuelve a IN_PROGRESS porque
+// hay platos nuevos por cocinar.
+ordersRouter.post("/orders/:orderId/add-items", async (req, res) => {
+  const orderId = Number(req.params.orderId);
+  const existing = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { items: true },
+  });
+  if (!existing) throw new ApiError(404, "Pedido no encontrado");
+  await ensureServiceAccess(
+    existing.instanceId,
+    ["Pedidos", "Cocina", "Mapa"],
+    req,
+  );
+  if (existing.status === "CANCELLED") {
+    throw new ApiError(
+      409,
+      "Este pedido está cancelado; crea un pedido nuevo para la mesa.",
+    );
+  }
+
+  const { items, notes, expectedUpdatedAt } = req.body;
+  const newItems = parseOrderItems(items);
+  const staleMsg =
+    "Este pedido se modificó mientras tanto (otra persona lo cambió). Recarga y vuelve a intentarlo.";
+  checkNotStale(expectedUpdatedAt, existing.updatedAt, staleMsg);
+
+  const nextStatus =
+    existing.status === "READY" || existing.status === "DELIVERED"
+      ? "IN_PROGRESS"
+      : existing.status;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    await checkNotStaleInTx(
+      () =>
+        tx.order.findUnique({
+          where: { id: orderId },
+          select: { updatedAt: true },
+        }),
+      expectedUpdatedAt,
+      existing.updatedAt,
+      staleMsg,
+    );
+    for (const item of newItems) {
+      // Solo se fusiona con una línea que siga sin preparar: sumarse a una
+      // ya preparada escondería la cantidad nueva como si cocina ya la
+      // tuviera hecha.
+      const match = existing.items.find(
+        (i) =>
+          i.dishName === item.dishName &&
+          i.unitPrice === item.unitPrice &&
+          i.preparedAt === null,
+      );
+      if (match) {
+        await tx.orderItem.update({
+          where: { id: match.id },
+          data: { quantity: match.quantity + item.quantity },
+        });
+      } else {
+        await tx.orderItem.create({ data: { ...item, orderId } });
+      }
+    }
+    return tx.order.update({
+      where: { id: orderId },
+      data: {
+        status: nextStatus,
+        ...(notes && {
+          notes: existing.notes ? `${existing.notes}\n${notes}` : notes,
+        }),
+      },
+      include: { items: { orderBy: { id: "asc" } } },
+    });
+  });
+
+  await publish(existing.instanceId, {
     type: "order",
     orderId,
     tableNumber: existing.tableNumber,
@@ -447,7 +577,7 @@ ordersRouter.patch("/table-sessions/:sessionId/close", async (req, res) => {
     tableNumber: tableSession.tableNumber,
     summary: `${total} pedido(s) cobrados`,
   });
-  publish(tableSession.instanceId, {
+  await publish(tableSession.instanceId, {
     type: "table-session",
     tableNumber: tableSession.tableNumber,
   });
@@ -466,7 +596,13 @@ ordersRouter.delete("/orders/:orderId", async (req, res) => {
     ["Pedidos", "Cocina", "Mapa"],
     req,
   );
-  await prisma.order.delete({ where: { id: orderId } });
+
+  const sessionAutoClosed = await prisma.$transaction(async (tx) => {
+    await tx.order.delete({ where: { id: orderId } });
+    // Igual que al cancelar: si al borrarlo no queda nada facturable en su
+    // sesión, se cierra sola (ver closeSessionIfNowEmpty).
+    return closeSessionIfNowEmpty(tx, existing.tableSessionId);
+  });
 
   const actorName = await resolveWaiterName(req);
   await logAudit({
@@ -476,10 +612,25 @@ ordersRouter.delete("/orders/:orderId", async (req, res) => {
     tableNumber: existing.tableNumber,
     summary: `Pedido #${existing.id} · ${existing.items.length} línea(s) · ${existing.status}`,
   });
-  publish(existing.instanceId, {
+  if (sessionAutoClosed) {
+    await logAudit({
+      instanceId: existing.instanceId,
+      action: "TABLE_SESSION_CLOSED",
+      actorName,
+      tableNumber: existing.tableNumber,
+      summary: "Cerrada automáticamente: no quedaban pedidos facturables",
+    });
+  }
+  await publish(existing.instanceId, {
     type: "order",
     orderId,
     tableNumber: existing.tableNumber,
   });
+  if (sessionAutoClosed) {
+    await publish(existing.instanceId, {
+      type: "table-session",
+      tableNumber: existing.tableNumber,
+    });
+  }
   res.status(204).end();
 });

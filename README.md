@@ -109,13 +109,81 @@ postgres:
     retries: 5
 ```
 
-El servicio `backend` no necesita cambios: sigue publicando el puerto `3001`,
-pero solo lo alcanzará el reverse proxy que instalamos en el siguiente paso
-(o localhost del propio VPS).
+El servicio `backend` no necesita cambios de puertos: sigue publicando el
+`3001`, pero solo lo alcanzará el reverse proxy que instalamos más adelante
+(o localhost del propio VPS). Sí conviene revisar su configuración de
+rendimiento — siguiente paso.
 
 ---
 
-## 3. Preparar el VPS Ubuntu
+## 3. Aprovechar varios núcleos y ajustar conexiones (recomendado)
+
+El backend reparte el trabajo entre varios núcleos del servidor (usando
+`cluster` de Node) y abre un grupo de conexiones a Postgres por cada uno.
+Ya viene con valores por defecto razonables, pero conviene revisarlos según
+el servidor donde lo despliegues.
+
+### 3.1 Cuántos núcleos tiene tu servidor
+
+```bash
+nproc
+```
+
+Si no fijas `WEB_CONCURRENCY` en `docker-compose.yml`, el backend detecta
+este número solo y lanza un proceso trabajador por núcleo.
+
+### 3.2 La cuenta de conexiones que no hay que superar
+
+```
+WEB_CONCURRENCY × DB_POOL_SIZE  ≤  max_connections de Postgres (100 por defecto)
+```
+
+Ejemplo con un servidor de 4 núcleos y los valores por defecto (`DB_POOL_SIZE=20`):
+4 × 20 = 80 conexiones, dejando margen de 20 bajo el límite de 100 de
+Postgres para `psql`, migraciones, etc. Con un servidor de 8 núcleos,
+8 × 20 = 160 ya superaría ese límite.
+
+Ambas variables se fijan en `docker-compose.yml`, servicio `backend`
+(comentadas por defecto — descomenta solo si necesitas un valor distinto
+al automático):
+
+```yaml
+environment:
+  # ...
+  # WEB_CONCURRENCY: 4
+  # DB_POOL_SIZE: 20
+```
+
+Si hace falta subir el límite de Postgres en vez de bajar `DB_POOL_SIZE`,
+en el servicio `postgres`:
+
+```yaml
+postgres:
+  # ...
+  command: postgres -c max_connections=200
+```
+
+### 3.3 Límite de ficheros abiertos (ulimit)
+
+Cada conexión en tiempo real (mapa de mesas, cocina, gestión de pedidos)
+consume un descriptor de fichero del contenedor — el valor por defecto del
+sistema (a menudo 1024) se queda corto con muchas conexiones simultáneas.
+Ya viene configurado en `docker-compose.yml`:
+
+```yaml
+backend:
+  # ...
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+```
+
+No hace falta tocarlo salvo que en algún momento necesites subirlo aún más.
+
+---
+
+## 4. Preparar el VPS Ubuntu
 
 Conéctate por SSH y ejecuta:
 
@@ -139,13 +207,13 @@ al exterior** — solo accesibles dentro del propio servidor/Docker.
 
 ---
 
-## 4. Subir el proyecto y arrancarlo
+## 5. Subir el proyecto y arrancarlo
 
 ```bash
 git clone <tu-repo-del-backend> backend
 cd backend
 cp .env.example .env
-nano .env   # rellena los valores de producción del paso 2
+nano .env   # rellena los valores de producción del paso 1
 
 docker compose up -d --build
 ```
@@ -159,7 +227,7 @@ docker compose logs -f backend
 
 ---
 
-## 5. HTTPS con reverse proxy (Caddy)
+## 6. HTTPS con reverse proxy (Caddy)
 
 Las cookies de sesión usan `Secure`, así que el backend **debe** servirse por
 HTTPS. La forma más simple es Caddy (gestiona el certificado solo).
@@ -188,7 +256,7 @@ Verifica: `https://api.tudominio.com/` debe responder
 
 ---
 
-## 6. Frontend en Cloudflare Pages
+## 7. Frontend en Cloudflare Pages
 
 Para **cada** frontend (`service-manager-frontend` y `Customer-Portal`):
 
@@ -217,13 +285,13 @@ docker compose restart backend
 
 ---
 
-## 7. Despliegue automático y CI con GitHub Actions
+## 8. Despliegue automático y CI con GitHub Actions
 
 Con lo anterior, cada cambio requiere entrar por SSH al VPS y ejecutar `git pull` + `docker compose up -d --build` a mano. Esto lo automatiza: **haces `git push` y el propio servidor se actualiza solo**, sin que tengas que tocar nada más. De paso, se añaden dos comprobaciones automáticas (auditoría de dependencias y estilo de código) que corren en cada push, sin depender del VPS.
 
-Los frontends ya tienen el despliegue automático gratis: Cloudflare Pages redespliega solo en cuanto detecta un commit nuevo en el repo conectado. Lo de SSH (7.1-7.4) es específicamente para el **backend**, que no trae nada parecido integrado — `audit.yml` y `prettier.yml` (7.5-7.6) sí aplican a los tres repos por igual.
+Los frontends ya tienen el despliegue automático gratis: Cloudflare Pages redespliega solo en cuanto detecta un commit nuevo en el repo conectado. Lo de SSH (8.1-8.4) es específicamente para el **backend**, que no trae nada parecido integrado — `audit.yml` y `prettier.yml` (8.5-8.6) sí aplican a los tres repos por igual.
 
-### 7.1 Generar una clave SSH dedicada para el despliegue
+### 8.1 Generar una clave SSH dedicada para el despliegue
 
 En el propio VPS:
 
@@ -235,7 +303,7 @@ cat ~/.ssh/deploy_key
 
 El último comando imprime la clave **privada** — copia toda la salida (incluidas las líneas `-----BEGIN...-----` y `-----END...-----`), la necesitas en el siguiente paso. Usar una clave dedicada (en vez de la tuya personal) significa que puedes revocarla más adelante sin perder tu propio acceso SSH.
 
-### 7.2 Guardar 3 secrets en GitHub
+### 8.2 Guardar 3 secrets en GitHub
 
 En el repo del backend → **Settings → Secrets and variables → Actions → New repository secret**:
 
@@ -243,9 +311,9 @@ En el repo del backend → **Settings → Secrets and variables → Actions → 
 | ----------------- | ------------------------------------------------- |
 | `SSH_HOST`        | IP (o dominio) de tu VPS                          |
 | `SSH_USERNAME`    | El usuario de Linux con el que te conectas al VPS |
-| `SSH_PRIVATE_KEY` | La clave privada impresa en el paso 7.1           |
+| `SSH_PRIVATE_KEY` | La clave privada impresa en el paso 8.1           |
 
-### 7.3 Crear el workflow
+### 8.3 Crear el workflow
 
 Archivo `.github/workflows/deploy.yml` en el repo del backend:
 
@@ -276,7 +344,7 @@ Ajusta `cd ~/backend` si en tu VPS el repo está en otra ruta.
 
 Qué hace cada parte: al hacer push a `main`, GitHub abre una conexión SSH al VPS usando los 3 secrets y ejecuta ese `script` tal cual lo escribirías tú a mano — trae el código nuevo (`git pull`) y reconstruye **solo** el contenedor `backend` (`postgres` no se toca, no hace falta reiniciar la base de datos por un cambio de código).
 
-### 7.4 Probarlo
+### 8.4 Probarlo
 
 ```bash
 git push origin main
@@ -288,7 +356,7 @@ Como el `CMD` del `Dockerfile` ya ejecuta `prisma migrate deploy` al arrancar, c
 
 > ⚠️ Esto le da acceso de despliegue al VPS a cualquiera que pueda hacer push a `main` (o mergear en ella). Si el repo lo tocáis varias personas, vale la pena configurar reglas de protección de rama en GitHub.
 
-### 7.5 Auditoría de seguridad automática (`audit.yml`)
+### 8.5 Auditoría de seguridad automática (`audit.yml`)
 
 Además del despliegue, conviene tener comprobaciones automáticas que corran en cada push — sin depender del VPS. `.github/workflows/audit.yml`:
 
@@ -323,7 +391,7 @@ Corre en **cada push** (a cualquier rama) y en cada pull request contra `main` �
 
 `pnpm/setup@v2` sustituye a los dos pasos que se usaban antes por separado (`actions/setup-node` + `pnpm/action-setup`) — con `runtime: node@24` instala Node 24 y con `version: 12` la versión de pnpm, todo en un único paso.
 
-### 7.6 Estilo de código automático (`prettier.yml`)
+### 8.6 Estilo de código automático (`prettier.yml`)
 
 `.github/workflows/prettier.yml`:
 
@@ -357,13 +425,13 @@ jobs:
 
 Falla si algún archivo no está formateado con Prettier (`pnpm run format:check`, el mismo script que corres en local) — útil para detectar en un pull request que alguien olvidó formatear antes de hacer commit.
 
-### 7.7 Dónde van estos archivos
+### 8.7 Dónde van estos archivos
 
 Los tres workflows (`deploy.yml`, `audit.yml`, `prettier.yml`) viven en la carpeta `.github/workflows/` **de cada repo**, no en uno compartido — al estar completamente separados (backend, `service-manager-frontend`, Customer-Portal), cada repositorio necesita su propia copia. `deploy.yml` solo tiene sentido en el repo del backend (es el único que se despliega por SSH a un VPS); `audit.yml` y `prettier.yml` puedes copiarlos tal cual a los tres repos, ajustando únicamente el script `format:check` de cada `package.json` si aún no lo tienes (ya lo añadimos al backend y al frontend anteriormente).
 
 ---
 
-## 8. Checklist final
+## 9. Checklist final
 
 - [ ] `.env` de producción con contraseñas fuertes y `NODE_ENV=production`.
 - [ ] `DATABASE_URL` usa `postgres` como host (no `localhost`).
@@ -375,10 +443,11 @@ Los tres workflows (`deploy.yml`, `audit.yml`, `prettier.yml`) viven en la carpe
       sin barra final) con los dominios finales de Pages.
 - [ ] Login probado desde el dominio real de Pages (no `localhost`).
 - [ ] Los 3 secrets (`SSH_HOST`, `SSH_USERNAME`, `SSH_PRIVATE_KEY`) creados en GitHub y `deploy.yml` probado con un push real.
+- [ ] `nproc` comprobado en el VPS y `WEB_CONCURRENCY` / `DB_POOL_SIZE` ajustados si hace falta (ver paso 3).
 
 ---
 
-## 9. Problemas típicos
+## 10. Problemas típicos
 
 | Síntoma                                                                  | Causa más probable                                                                                                                                                                      |
 | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

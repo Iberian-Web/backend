@@ -6,16 +6,14 @@ import { ensureServiceAccess } from "../../lib/access";
 import { resolveWaiterName } from "../../middleware/session";
 import { logAudit } from "../../lib/audit";
 import { publish } from "../../lib/events";
+import { checkNotStale, checkNotStaleInTx } from "../../lib/concurrency";
 
 export const tablesRouter = Router();
 
 const VALID_SHAPES: TableShape[] = ["RECTANGLE", "ROUND"];
 
-// Límites de sentido común para el tamaño/posición de una mesa en el mapa:
-// sin esto, alguien llamando a la API directamente (saltándose el `max` del
-// input del formulario, que solo protege en el cliente) podría crear una
-// mesa de p. ej. 50x50 celdas, o colocarla en una fila/columna absurda que
-// obligaría al mapa a intentar dibujar millones de celdas vacías.
+// Límites de sentido común: sin ellos, una llamada directa a la API
+// (saltándose el `max` del formulario) podría crear una mesa gigante.
 const MAX_TABLE_DIMENSION = 6;
 const MAX_TABLE_POSITION = 200;
 
@@ -236,7 +234,7 @@ tablesRouter.post("/instances/:instanceId/tables", async (req, res) => {
         height: input.height!,
       },
     });
-    publish(instanceId, { type: "table" });
+    await publish(instanceId, { type: "table" });
     res.status(201).json(table);
   } catch (err) {
     if (
@@ -262,43 +260,28 @@ tablesRouter.put("/tables/:tableId", async (req, res) => {
 
   const input = parseTableInput(req.body ?? {}, { partial: true });
   const { expectedUpdatedAt } = req.body ?? {};
+  const staleMsg =
+    "Esta mesa se modificó mientras tanto (otra persona la cambió). Recarga el mapa e inténtalo de nuevo.";
 
-  // Mismo control de concurrencia optimista que en pedidos: si dos personas
-  // editan/arrastran la misma mesa del mapa a la vez, la segunda escritura
-  // se rechaza en vez de pisar silenciosamente a la primera.
-  if (expectedUpdatedAt !== undefined) {
-    const expected = new Date(expectedUpdatedAt);
-    if (Number.isNaN(expected.getTime())) {
-      throw new ApiError(400, "expectedUpdatedAt inválido");
-    }
-    if (expected.getTime() !== existing.updatedAt.getTime()) {
-      throw new ApiError(
-        409,
-        "Esta mesa se modificó mientras tanto (otra persona la cambió). Recarga el mapa e inténtalo de nuevo.",
-      );
-    }
-  }
+  // Si dos personas editan/arrastran la misma mesa del mapa a la vez, la
+  // segunda escritura se rechaza en vez de pisar silenciosamente a la primera.
+  checkNotStale(expectedUpdatedAt, existing.updatedAt, staleMsg);
 
   try {
     const updated = await prisma.$transaction(async (tx) => {
-      if (expectedUpdatedAt !== undefined) {
-        const current = await tx.restaurantTable.findUnique({
-          where: { id: tableId },
-          select: { updatedAt: true },
-        });
-        if (
-          !current ||
-          current.updatedAt.getTime() !== existing.updatedAt.getTime()
-        ) {
-          throw new ApiError(
-            409,
-            "Esta mesa se modificó mientras tanto (otra persona la cambió). Recarga el mapa e inténtalo de nuevo.",
-          );
-        }
-      }
+      await checkNotStaleInTx(
+        () =>
+          tx.restaurantTable.findUnique({
+            where: { id: tableId },
+            select: { updatedAt: true },
+          }),
+        expectedUpdatedAt,
+        existing.updatedAt,
+        staleMsg,
+      );
       return tx.restaurantTable.update({ where: { id: tableId }, data: input });
     });
-    publish(existing.instanceId, { type: "table" });
+    await publish(existing.instanceId, { type: "table" });
     res.json(updated);
   } catch (err) {
     if (
@@ -333,18 +316,15 @@ tablesRouter.delete("/tables/:tableId", async (req, res) => {
       ? `Mesa ${existing.number} (${existing.name})`
       : `Mesa ${existing.number}`,
   });
-  publish(existing.instanceId, { type: "table" });
+  await publish(existing.instanceId, { type: "table" });
   res.status(204).end();
 });
 
 const AUDIT_LOG_LIMIT_DEFAULT = 50;
 const AUDIT_LOG_LIMIT_MAX = 200;
 
-// GET /api/instances/:instanceId/audit-log?tableNumber=7 — histórico de
-// operaciones irreversibles (pedidos cancelados/eliminados, mesas cerradas
-// o eliminadas), opcionalmente filtrado por mesa. Pensado para responder
-// "¿qué pasó con la mesa 7 anoche?" sin tener que fiarse de la memoria de
-// nadie — ver AuditLog en el schema.
+// Histórico de operaciones irreversibles (cancelaciones, cierres…),
+// opcionalmente filtrado por mesa — ver AuditLog en el schema.
 tablesRouter.get("/instances/:instanceId/audit-log", async (req, res) => {
   const instanceId = Number(req.params.instanceId);
   await ensureServiceAccess(instanceId, ["Mapa", "Pedidos", "Analíticas"], req);

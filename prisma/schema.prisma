@@ -478,11 +478,16 @@ model Order {
 /// el momento de crear el pedido, para que el histórico no cambie si luego
 /// se edita o elimina el plato en la carta.
 model OrderItem {
-  id        Int   @id @default(autoincrement())
+  id        Int       @id @default(autoincrement())
   orderId   Int
   dishName  String
   quantity  Int
-  unitPrice Float @default(0)
+  unitPrice Float     @default(0)
+  // Cuándo cocina terminó de prepararla (null = todavía pendiente). Al
+  // añadir platos a un pedido ya listo/entregado, las líneas nuevas nacen
+  // sin preparar mientras las anteriores conservan la suya, así Cocina solo
+  // ve como "por hacer" lo que de verdad falta por cocinar.
+  preparedAt DateTime?
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
